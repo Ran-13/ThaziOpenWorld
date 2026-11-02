@@ -1,0 +1,81 @@
+{
+  "_help": "Put .glb files in this folder. \"file\" may be one filename or a list (random variety). Empty slots use built-in models. length/height = target size in metres, rotateY = degrees so the model faces +Z. Houses are stretched to fit each real OSM footprint.",
+  "slots": {
+    "houses": {
+      "file": [
+        "kenney-city/building-small-a.glb",
+        "kenney-city/building-small-b.glb",
+        "kenney-city/building-small-c.glb",
+        "kenney-city/building-small-d.glb"
+      ],
+      "rotateY": 0
+    },
+    "bike": {
+      "file": null,
+      "length": 1.8,
+      "rotateY": 0
+    },
+    "car": {
+      "file": [
+        "quaternius-suv/suv-red.glb",
+        "quaternius-suv/suv-teal.glb",
+        "quaternius-suv/suv-amber.glb",
+        "quaternius-suv/suv-white.glb",
+        "quaternius-suv/suv-slate.glb"
+      ],
+      "length": 4.1,
+      "rotateY": 0
+    },
+    "pickup": {
+      "file": [
+        "kenney-racing/vehicle-truck-green.glb",
+        "kenney-racing/vehicle-truck-purple.glb"
+      ],
+      "length": 4.4,
+      "rotateY": 0
+    },
+    "moto": {
+      "file": "poly-scooter/scooter.glb",
+      "length": 1.9,
+      "rotateY": 90
+    },
+    "trishaw": {
+      "file": null,
+      "length": 2,
+      "rotateY": 0
+    },
+    "person": {
+      "file": [
+        "kenney-platformer/character.glb"
+      ],
+      "height": 1.6,
+      "rotateY": 0,
+      "walkClip": "walk"
+    },
+    "palm": {
+      "file": "poly-palm/palmyra-palm.glb",
+      "height": 9.5,
+      "rotateY": 0
+    },
+    "tree": {
+      "file": "3donimus-tree/big-tree.glb",
+      "height": 6.5,
+      "rotateY": 0
+    },
+    "pagoda": {
+      "file": null,
+      "height": 13,
+      "rotateY": 0
+    },
+    "loco": {
+      "file": null,
+      "length": 16,
+      "rotateY": 0
+    },
+    "coach": {
+      "file": null,
+      "length": 14,
+      "rotateY": 0
+    }
+  }
+}
