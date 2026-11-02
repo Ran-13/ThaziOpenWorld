@@ -100,6 +100,7 @@ export async function createGame(o) {
     seg(ax, az, bx, bz, w, y, c) { this.at((ax + bx) / 2, (az + bz) / 2).seg(ax, az, bx, bz, w, y, c); }
     disc(x, z, r, y, c) { this.at(x, z).disc(x, z, r, y, c, 14); }
     segUV(ax, az, bx, bz, w, y, c, v0, v1) { this.at((ax + bx) / 2, (az + bz) / 2).segUV(ax, az, bx, bz, w, y, c, v0, v1); }
+    quadUV(aL, bL, bR, aR, y, c, v0, v1) { const cx = (aL[0] + bL[0] + bR[0] + aR[0]) / 4, cz = (aL[1] + bL[1] + bR[1] + aR[1]) / 4; this.at(cx, cz).quad([aL[0], y, aL[1]], [bL[0], y, bL[1]], [bR[0], y, bR[1]], [aR[0], y, aR[1]], c, UP, [0, v0], [0, v1], [1, v1], [1, v0]); }
     meshes(mat, cast, recv, order) { for (const b of this.m.values()) if (!b.empty) { const me = b.mesh(mat); me.castShadow = cast; me.receiveShadow = recv; if (order) me.renderOrder = order; scene.add(me); } }
   }
   const sky = makeSky(); scene.add(sky);
@@ -183,14 +184,32 @@ export async function createGame(o) {
   const order = s => (MAJOR.has(s[6].type) ? 3 : DRIVE.has(s[6].type) ? 2 : 1);
   const sorted = roadSegs.slice().sort((a, b) => order(a) - order(b));
   const shoulderC = col('#d8c49a'), white = col('#ffffff');
-  const RD = { major: new ChunkB(), plain: new ChunkB(), dirt: new ChunkB() }, JN = { paved: new ChunkB(8), dirt: new ChunkB(8) };
+  const RD = { major: new ChunkB(), plain: new ChunkB(), dirt: new ChunkB() }, JN = { major: new ChunkB(8), plain: new ChunkB(8), dirt: new ChunkB(8) };
   const ordR = r => (MAJOR.has(r.type) ? 3 : DRIVE.has(r.type) ? 2 : 1);
   let wi = 0;
   for (const r of W.roads.slice().sort((a, b) => ordR(a) - ordR(b))) {
-    const lift = (wi++ % 8) * 0.004;
+    const lift = (wi++ % 5) * 0.003;
     const t = r.type, unp = t === 'track' || UNPAVED.test(r.tags.surface || ''), drive = DRIVE.has(t) || t === 'track';
     const kind = !drive ? null : unp ? 'dirt' : MAJOR.has(t) ? 'major' : 'plain';
-    const y = (MAJOR.has(t) ? 0.09 : drive ? 0.07 : 0.06) + lift, rep = 16;
+    // each class needs its own band: base gaps must exceed the 0.012 lift range, or a
+    // pale footpath lands on top of the asphalt it crosses
+    const y = (MAJOR.has(t) ? 0.095 : drive ? 0.07 : 0.05) + lift, rep = 16;
+    // consecutive segments used to be independent quads on one plane: at a bend they overlapped,
+    // so they z-fought and the next quad dragged its sandy edge across the road. Mitre the joints
+    // so neighbouring quads share an exact edge instead.
+    const mit = [];
+    for (let i = 0; i < r.pts.length; i++) {
+      const a = r.pts[i - 1], b = r.pts[i], d = r.pts[i + 1];
+      let d1x, d1z, d2x, d2z;
+      if (a) { d1x = b[0] - a[0]; d1z = b[1] - a[1]; const l = Math.hypot(d1x, d1z) || 1; d1x /= l; d1z /= l; }
+      if (d) { d2x = d[0] - b[0]; d2z = d[1] - b[1]; const l = Math.hypot(d2x, d2z) || 1; d2x /= l; d2z /= l; }
+      if (d1x === undefined) { d1x = d2x; d1z = d2z; }
+      if (d2x === undefined) { d2x = d1x; d2z = d1z; }
+      const n1x = -d1z, n1z = d1x;
+      let mx = n1x + -d2z, mz = n1z + d2x; const ml = Math.hypot(mx, mz) || 1; mx /= ml; mz /= ml;
+      const k = Math.max(0.4, mx * n1x + mz * n1z);   // clamp so hairpins do not spike
+      mit.push([mx / k, mz / k]);
+    }
     let cum = 0;
     for (let i = 0; i < r.pts.length - 1; i++) {
       const p = r.pts[i], q = r.pts[i + 1], L0 = Math.hypot(q[0] - p[0], q[1] - p[1]);
@@ -198,8 +217,13 @@ export async function createGame(o) {
       const L = Math.hypot(c[2] - c[0], c[3] - c[1]);
       if (!kind) { G.seg(c[0], c[1], c[2], c[3], r.w, y, footC); G.disc(c[2], c[3], r.w / 2, y, footC); cum += L0; continue; }
       if (kind !== 'dirt') { G.seg(c[0], c[1], c[2], c[3], r.w + 2.0, 0.04 + lift * 0.25, shoulderC); G.disc(c[0], c[1], (r.w + 2.0) / 2, 0.04 + lift * 0.25, shoulderC); G.disc(c[2], c[3], (r.w + 2.0) / 2, 0.04 + lift * 0.25, shoulderC); }
-      RD[kind].segUV(c[0], c[1], c[2], c[3], r.w, y, white, cum / rep, (cum + L) / rep);
-      const jn = kind === 'dirt' ? JN.dirt : JN.paved;
+      const whole = Math.abs(c[0] - p[0]) < 1e-6 && Math.abs(c[1] - p[1]) < 1e-6 && Math.abs(c[2] - q[0]) < 1e-6 && Math.abs(c[3] - q[1]) < 1e-6;
+      if (whole) {
+        const hw = r.w / 2, ma = mit[i], mb = mit[i + 1];
+        RD[kind].quadUV([p[0] + ma[0] * hw, p[1] + ma[1] * hw], [q[0] + mb[0] * hw, q[1] + mb[1] * hw],
+          [q[0] - mb[0] * hw, q[1] - mb[1] * hw], [p[0] - ma[0] * hw, p[1] - ma[1] * hw], y, white, cum / rep, (cum + L) / rep);
+      } else RD[kind].segUV(c[0], c[1], c[2], c[3], r.w, y, white, cum / rep, (cum + L) / rep);
+      const jn = JN[kind];
       jn.disc(c[0], c[1], r.w / 2, y - 0.002, white); jn.disc(c[2], c[3], r.w / 2, y - 0.002, white);
       cum += L0;
     }
@@ -226,7 +250,7 @@ export async function createGame(o) {
   }
   const roadMat = map => new THREE.MeshStandardMaterial({ map, vertexColors: true, roughness: 0.88, metalness: 0 });
   RD.major.meshes(roadMat(TX.asphaltMajor), false, true); RD.plain.meshes(roadMat(TX.asphaltPlain), false, true); RD.dirt.meshes(roadMat(TX.dirtRoad), false, true);
-  JN.paved.meshes(roadMat(TX.asphaltJoint), false, true); JN.dirt.meshes(roadMat(TX.dirtJoint), false, true);
+  JN.major.meshes(roadMat(TX.asphaltJointMajor), false, true); JN.plain.meshes(roadMat(TX.asphaltJointPlain), false, true); JN.dirt.meshes(roadMat(TX.dirtJoint), false, true);
   const waterMat = makeWaterMaterial();
   { const WB = new ChunkB(); const wc = col('#ffffff');
     for (const w of W.waters) WB.poly(w, 0.045, wc);

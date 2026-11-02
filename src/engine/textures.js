@@ -93,16 +93,22 @@ export function makeTextures() {
     x.fillRect(0, h * 0.5 - 1, w, 2);
     x.strokeStyle = '#3a2a20'; x.lineWidth = 4; x.strokeRect(2, 2, w - 4, h - 4);
   }, true, false);
-  const roadTex = (fn) => { const tx = cv(256, 1024, fn); tx.wrapS = THREE.ClampToEdgeWrapping; return tx; };
+  const roadTex = (fn) => { const tx = cv(384, 1024, fn); tx.wrapS = THREE.ClampToEdgeWrapping; return tx; };
   const asphaltBase = (x, w, h, tone = 74) => {
     x.fillStyle = `rgb(${tone},${tone + 2},${tone + 6})`; x.fillRect(0, 0, w, h);
     const d = x.getImageData(0, 0, w, h);
     for (let i = 0; i < d.data.length; i += 4) { const n = (Math.random() - 0.5) * 30 + (Math.random() < 0.035 ? 38 : 0) - (Math.random() < 0.03 ? 25 : 0); d.data[i] += n; d.data[i + 1] += n; d.data[i + 2] += n; }
     x.putImageData(d, 0, 0);
-    for (let k = 0; k < 3; k++) { const pw = 30 + Math.random() * 70, ph = 40 + Math.random() * 120, px = Math.random() * (w - pw), py = Math.random() * (h - ph); x.fillStyle = `rgba(30,30,34,${0.06 + Math.random() * 0.07})`; x.beginPath(); x.roundRect ? x.roundRect(px, py, pw, ph, 14) : x.rect(px, py, pw, ph); x.fill(); }
+    for (let k = 0; k < 3; k++) { const pw = 90 + Math.random() * 150, ph = 140 + Math.random() * 260, px = Math.random() * (w - pw), py = Math.random() * (h - ph); x.fillStyle = `rgba(30,30,34,${0.022 + Math.random() * 0.026})`; x.beginPath(); x.roundRect ? x.roundRect(px, py, pw, ph, 60) : x.rect(px, py, pw, ph); x.fill(); }
     for (let k = 0; k < 14; k++) { const g = x.createRadialGradient(0, 0, 0, 0, 0, 40); g.addColorStop(0, `rgba(${Math.random() < 0.5 ? '20,20,22' : '150,150,150'},0.07)`); g.addColorStop(1, 'rgba(0,0,0,0)'); x.save(); x.translate(Math.random() * w, Math.random() * h); x.scale(1, 2.5); x.fillStyle = g; x.fillRect(-40, -40, 80, 80); x.restore(); }
-    x.strokeStyle = 'rgba(18,18,20,.6)'; x.lineWidth = 1.2;
-    for (let k = 0; k < 4; k++) { let px = Math.random() * w, py = Math.random() * h; x.beginPath(); x.moveTo(px, py); for (let j = 0; j < 8; j++) { px += (Math.random() - 0.5) * 30; py += Math.random() * 22; x.lineTo(px, py); } x.stroke(); }
+    x.strokeStyle = 'rgba(20,20,23,.3)'; x.lineCap = 'round';
+    for (let k = 0; k < 3; k++) {
+      let px = Math.random() * w, py = Math.random() * h;
+      const drift = (Math.random() - 0.5) * 7;
+      x.lineWidth = 0.6 + Math.random() * 0.6; x.beginPath(); x.moveTo(px, py);
+      for (let j = 0; j < 16; j++) { px += drift + (Math.random() - 0.5) * 4.5; py += h / 22; x.lineTo(px, py); }
+      x.stroke();
+    }
   };
   const wear = (x, w, h, bands) => { for (const [a, b] of bands) { const g = x.createLinearGradient(a * w, 0, b * w, 0); g.addColorStop(0, 'rgba(255,255,255,0)'); g.addColorStop(0.5, 'rgba(255,255,255,0.06)'); g.addColorStop(1, 'rgba(255,255,255,0)'); x.fillStyle = g; x.fillRect(a * w, 0, (b - a) * w, h); } };
   const dustEdges = (x, w, h, amt) => {
@@ -111,13 +117,14 @@ export function makeTextures() {
   };
   const paint = (x, px, py, pw, ph) => { x.fillStyle = 'rgba(238,236,226,0.92)'; x.fillRect(px, py, pw, ph); x.globalCompositeOperation = 'destination-out'; for (let k = 0; k < ph / 3; k++) { x.fillStyle = `rgba(0,0,0,${Math.random() * 0.6})`; x.fillRect(px, py + Math.random() * ph, pw, 1 + Math.random() * 2); } x.globalCompositeOperation = 'source-over'; };
   T.asphaltMajor = roadTex((x, w, h) => {
-    asphaltBase(x, w, h, 70); wear(x, w, h, [[0.18, 0.32], [0.38, 0.46], [0.54, 0.62], [0.68, 0.82]]);
+    asphaltBase(x, w, h, 74); wear(x, w, h, [[0.18, 0.32], [0.38, 0.46], [0.54, 0.62], [0.68, 0.82]]);
     const lay = x.getImageData(0, 0, w, h); void lay;
     dustEdges(x, w, h, 0.05);
-    paint(x, 15, 0, 4, h); paint(x, w - 19, 0, 4, h); paint(x, w / 2 - 2, 0, 4, h * 0.1875); paint(x, w / 2 - 2, h * 0.5, 4, h * 0.1875);
+    const S = w / 256;
+    paint(x, 15 * S, 0, 4 * S, h); paint(x, w - 19 * S, 0, 4 * S, h); paint(x, w / 2 - 2 * S, 0, 4 * S, h * 0.1875); paint(x, w / 2 - 2 * S, h * 0.5, 4 * S, h * 0.1875);
   });
   T.asphaltPlain = roadTex((x, w, h) => {
-    asphaltBase(x, w, h, 80); wear(x, w, h, [[0.2, 0.36], [0.64, 0.8]]);
+    asphaltBase(x, w, h, 78); wear(x, w, h, [[0.2, 0.36], [0.64, 0.8]]);
     x.fillStyle = 'rgba(20,18,16,0.12)'; x.fillRect(w * 0.47, 0, w * 0.06, h);
     dustEdges(x, w, h, 0.13);
   });
@@ -128,7 +135,8 @@ export function makeTextures() {
     for (let k = 0; k < 40; k++) { x.fillStyle = `rgba(110,140,60,${0.25 + Math.random() * 0.35})`; const cx = (Math.random() < 0.5 ? 0.5 + (Math.random() - 0.5) * 0.08 : (Math.random() < 0.5 ? Math.random() * 0.08 : 0.92 + Math.random() * 0.08)) * w; x.beginPath(); x.arc(cx, Math.random() * h, 1.5 + Math.random() * 3, 0, 6.3); x.fill(); }
     dustEdges(x, w, h, 0.12);
   });
-  T.asphaltJoint = cv(256, 256, (x, w, h) => asphaltBase(x, w, h, 76));
+  T.asphaltJointMajor = cv(256, 256, (x, w, h) => asphaltBase(x, w, h, 74));
+  T.asphaltJointPlain = cv(256, 256, (x, w, h) => asphaltBase(x, w, h, 78));
   T.dirtJoint = cv(256, 256, (x, w, h) => { x.fillStyle = '#b8966a'; x.fillRect(0, 0, w, h); grain(x, w, h, 0.85, 1.05); });
   return T;
 }
