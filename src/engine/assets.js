@@ -50,6 +50,8 @@ export function cloneAsset(a) {
 // Instanced copies of a static GLB (trees etc). list: [x, z, rotY, scale]
 // Split per chunk like the procedural instances in game.js: one mesh spanning the whole town
 // is never frustum-culled, so every copy is redrawn into the shadow map each frame.
+// 160 m is deliberate - a coarser grid trades away shadow-pass culling and measured 2x the
+// triangles for fewer draw calls, which is a net loss.
 const CHUNK = 160;
 
 export function instancedFromAsset(a, list, scene) {

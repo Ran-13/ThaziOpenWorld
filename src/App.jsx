@@ -12,6 +12,24 @@ export default function App() {
   const [hud, setHud] = useState({ loading: true, loadMsg: 'စတင်နေသည်…' });
   const [started, setStarted] = useState(false);
   const [toast, setToast] = useState(null);
+  const [rotate, setRotate] = useState(false);
+  const [vp, setVp] = useState({ w: 0, h: 0 });
+
+  // Force landscape. screen.orientation.lock() works on Android/Chrome (and only in fullscreen);
+  // iOS Safari has no lock at all, so fall back to rotating the whole app 90 degrees.
+  useEffect(() => {
+    if (typeof matchMedia === 'undefined' || !matchMedia('(pointer: coarse)').matches) return;
+    let locked = false;
+    try {
+      const r = screen.orientation && screen.orientation.lock && screen.orientation.lock('landscape');
+      if (r && r.then) r.then(() => { locked = true; setRotate(false); }, () => {});
+    } catch (e) { /* unsupported, fall through to the CSS rotation */ }
+    const mq = matchMedia('(orientation: portrait)');
+    const sync = () => setRotate(!locked && mq.matches);
+    sync();
+    mq.addEventListener('change', sync);
+    return () => mq.removeEventListener('change', sync);
+  }, []);
 
   useEffect(() => {
     let alive = true, tt;
@@ -25,13 +43,40 @@ export default function App() {
     return () => { alive = false; game.current && game.current.dispose(); game.current = null; };
   }, []);
 
+  useEffect(() => {
+    const on = () => setVp({ w: window.innerWidth, h: window.innerHeight });
+    on();
+    window.addEventListener('resize', on); window.addEventListener('orientationchange', on);
+    if (window.visualViewport) window.visualViewport.addEventListener('resize', on);
+    return () => {
+      window.removeEventListener('resize', on); window.removeEventListener('orientationchange', on);
+      if (window.visualViewport) window.visualViewport.removeEventListener('resize', on);
+    };
+  }, []);
+
+  const [diag, setDiag] = useState(null);
+  useEffect(() => {
+    const id = setInterval(() => {
+      const c = document.querySelector('canvas'); if (!c) return;
+      let n = 0; const t0 = performance.now();
+      const tick = () => { n++; if (performance.now() - t0 < 900) requestAnimationFrame(tick);
+        else setDiag({ dpr: window.devicePixelRatio, back: c.width + 'x' + c.height,
+          css: c.clientWidth + 'x' + c.clientHeight, ratio: (c.width / c.clientWidth).toFixed(2),
+          fps: (n / ((performance.now() - t0) / 1000)).toFixed(0),
+          gi: game.current && game.current.info ? game.current.info() : null,
+          vp: window.innerWidth + 'x' + window.innerHeight, rot: rotate ? 'yes' : 'no' }); };
+      requestAnimationFrame(tick);
+    }, 1200);
+    return () => clearInterval(id);
+  }, [rotate]);
+
   const hr = hud.hour ?? (OPTIONS.realClock ? new Date().getHours() : OPTIONS.startHour), H = Math.floor(hr), Mi = Math.floor((hr - H) * 60), h12 = ((H + 11) % 12) + 1;
   const period = H >= 4 && H < 12 ? 'မနက်' : H >= 12 && H < 16 ? 'နေ့လယ်' : H >= 16 && H < 19 ? 'ညနေ' : 'ည';
   const m = hud.mission, ready = !!hud.ready;
-  const loadMsg = ready ? (hud.offline ? 'အင်တာနက် မရ၍ နမူနာမြို့ကို အသုံးပြုထားသည်' : `မြေပုံ အသင့်ဖြစ်ပြီ · အဆောက်အအုံ ${my(hud.stats?.b ?? 0)} လုံး${hud.stats?.models ? ` · GLB model ${my(hud.stats.models)} ခု` : ''}`) : hud.loadMsg;
+  const pct = ready ? 1 : Math.max(0, Math.min(1, hud.progress ?? 0));
 
   return (
-    <div style={{ position: 'fixed', inset: 0, fontFamily: "'Padauk', 'Noto Sans Myanmar', system-ui, sans-serif", color: '#2b2a33', touchAction: 'none', overflow: 'hidden', background: '#9fd3f0' }}>
+    <div style={{ position: 'fixed', ...(rotate && vp.w ? { top: 0, left: 0, width: vp.h, height: vp.w, transformOrigin: '0 0', transform: `rotate(90deg) translateY(${-vp.w}px)`, willChange: 'transform', backfaceVisibility: 'hidden' } : { inset: 0 }), fontFamily: "'Padauk', 'Noto Sans Myanmar', system-ui, sans-serif", color: '#2b2a33', touchAction: 'none', overflow: 'hidden', background: '#9fd3f0' }}>
       <div ref={stage} style={{ position: 'absolute', inset: 0 }} />
 
       <div style={{ position: 'absolute', top: 'calc(env(safe-area-inset-top) + 12px)', left: 12, display: 'flex', flexDirection: 'column', gap: 8, pointerEvents: 'none' }}>
@@ -101,21 +146,21 @@ export default function App() {
 
       {!started && (
         <div style={{ position: 'absolute', inset: 0, background: 'rgba(43,42,51,.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
-          <div style={{ background: '#fff8ec', borderRadius: 26, padding: '26px 24px 22px', maxWidth: 360, width: '100%', boxShadow: '0 8px 0 rgba(0,0,0,.25)', display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <div style={{ background: '#fff8ec', borderRadius: 26, padding: '30px 26px 20px', maxWidth: 340, width: '100%', boxShadow: '0 8px 0 rgba(0,0,0,.25)', display: 'flex', flexDirection: 'column', gap: 18, textAlign: 'center' }}>
+            <div style={{ fontSize: 46, fontWeight: 700, lineHeight: 1.25 }}>သာစည်</div>
             <div>
-              <div style={{ fontSize: 13, fontWeight: 700, color: '#d9603b' }}>မန္တလေးတိုင်း · မိတ္ထီလာခရိုင်</div>
-              <div style={{ fontSize: 44, fontWeight: 700, lineHeight: 1.3 }}>သာစည်</div>
-              <div style={{ fontSize: 18, lineHeight: 1.5, color: '#4a4450' }}>စက်ဘီးဖြင့် မြို့ပတ်ခရီး</div>
+              <div style={{ height: 10, borderRadius: 999, background: '#e8dfcd', overflow: 'hidden' }}>
+                <div style={{ height: '100%', width: `${Math.round(pct * 100)}%`, background: '#d9603b', borderRadius: 999, transition: 'width .35s ease' }} />
+              </div>
+              <div style={{ fontSize: 13, color: '#8a7d70', marginTop: 8, lineHeight: 1.5 }}>{my(Math.round(pct * 100))}%</div>
             </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 15, lineHeight: 1.6, color: '#4a4450' }}>
-              {[['#d9603b', 'ဘယ်ဘက် ဂျွိုက်စတစ်ဖြင့် စက်ဘီးနင်းပါ'], ['#f7c21b', 'လမ်းပေါ်ရှိ ပိတောက်ပန်းများ စုဆောင်းပါ'], ['#2f8f83', '"အလုပ်ယူ" နှိပ်ပြီး ပစ္စည်းပို့ကာ ငွေရှာပါ']].map(([c, t]) => (
-                <div key={t} style={{ display: 'flex', gap: 10 }}><span style={{ width: 10, height: 10, marginTop: 8, borderRadius: '50%', background: c, flex: 'none' }} />{t}</div>
-              ))}
-            </div>
-            <div style={{ fontSize: 13, color: '#6b5a4a', lineHeight: 1.5, minHeight: 20 }}>{loadMsg}</div>
-            <button disabled={!ready} onClick={() => { game.current?.start(); setStarted(true); }} style={{ ...btn, height: 56, borderRadius: 18, background: ready ? '#d9603b' : '#b8aea3', color: '#fff8ec', fontSize: 20, boxShadow: '0 5px 0 rgba(43,42,51,.3)' }}>{ready ? 'စတင်မည်' : 'ခဏစောင့်ပါ…'}</button>
-            <div style={{ fontSize: 12, color: '#8a7d70', textAlign: 'center' }}>ကီးဘုတ်: WASD / မြှားခလုတ် · Space = ဘဲလ်</div>
-            <div style={{ fontSize: 11, color: '#a2968a', textAlign: 'center' }}>မော်ဒယ်များ — Kenney, Quaternius (CC0) · ထန်းပင် Poly by Google, ဆိုင်ကယ် Vladimir Ilic, သစ်ပင် 3Donimus (CC-BY)</div>
+            <button disabled={!ready} onClick={() => { game.current?.start(); setStarted(true); }} style={{ ...btn, height: 54, borderRadius: 18, background: ready ? '#d9603b' : '#b8aea3', color: '#fff8ec', fontSize: 20, boxShadow: '0 5px 0 rgba(43,42,51,.3)' }}>{ready ? 'စတင်မည်' : 'ခဏစောင့်ပါ…'}</button>
+            {diag && (
+              <div style={{ fontSize: 11, color: '#2b2a33', background: '#ffe9b0', borderRadius: 8, padding: '6px 8px', font: '11px/1.5 monospace', textAlign: 'left' }}>
+                dpr {diag.dpr} · ratio {diag.ratio} · fps {diag.fps}<br />buffer {diag.back}<br />css {diag.css} · rot {diag.rot}{diag.gi ? <>{'\n'}<br />calls {diag.gi.calls} · tris {(diag.gi.tris / 1e6).toFixed(2)}M</> : null}
+              </div>
+            )}
+            <div style={{ fontSize: 10, color: '#a2968a', lineHeight: 1.5 }}>မော်ဒယ်များ — Kenney, Quaternius (CC0) · ထန်းပင် Poly by Google, ဆိုင်ကယ် Vladimir Ilic, သစ်ပင် 3Donimus (CC-BY)</div>
           </div>
         </div>
       )}

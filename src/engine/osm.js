@@ -12,6 +12,14 @@ export const my = s => String(s).replace(/[0-9]/g, d => MYD[d]);
 let seed = 4242;
 export const rnd = () => { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; };
 export const pick = a => a[Math.floor(rnd() * a.length)];
+// position hash: lets each building pick its own form without consuming rnd(), so adding a
+// choice here does not reshuffle everything generated after the buildings (trees, traffic).
+export const bhash = (x, z) => {
+  let h = Math.imul(Math.round(x * 100) | 0, 0x27d4eb2d) ^ Math.imul(Math.round(z * 100) | 0, 0x165667b1);
+  h ^= h >>> 15; h = Math.imul(h, 0x85ebca6b); h ^= h >>> 13; h = Math.imul(h, 0xc2b2ae35); h ^= h >>> 16;
+  return h >>> 0;
+};
+export const h01 = (h, k) => ((h ^ Math.imul(k + 1, 0x9e3779b1)) >>> 0) % 100003 / 100003;
 export const mpick = a => a[Math.floor(Math.random() * a.length)];
 export const col = h => new THREE.Color(h);
 
@@ -21,6 +29,7 @@ const CACHE_KEY = 'thazi-osm-cache-v1';
 export const RW = { motorway: 12, trunk: 11, primary: 10, secondary: 8, tertiary: 7, unclassified: 5.5, residential: 5.5, living_street: 4.5, service: 4, track: 3.5, road: 5, footway: 1.6, path: 1.6, pedestrian: 3, cycleway: 2, steps: 1.6, bridleway: 2 };
 export const MAJOR = new Set(['motorway', 'trunk', 'primary', 'secondary', 'tertiary']);
 export const DRIVE = new Set(['motorway', 'trunk', 'primary', 'secondary', 'tertiary', 'unclassified', 'residential', 'living_street', 'service', 'road']);
+export const BRICKS = ['#b4624a', '#a85740', '#c07658', '#9d5742', '#b06a4e', '#8f5440'];
 export const WALLS = ['#f4e4c8', '#f2c9b8', '#cfe3d4', '#c9dbe9', '#f6dfa0', '#e8d2e6', '#fbf6ec', '#e9c9a3', '#d7e7c0'];
 export const ROOFS = ['#c4573a', '#8aa0b4', '#b84a3c', '#6f8fa6', '#d98a4b', '#9aa5ad', '#a8553f'];
 export const CAR_COLS = ['#e94f37', '#3b8ea5', '#f5b700', '#ffffff', '#5c6b73', '#2e86ab', '#7bb661', '#f18f01'];
@@ -57,13 +66,14 @@ export async function fetchOSM(msg) {
   const q = `[out:json][timeout:90];(way["building"](${bb});way["highway"](${bb});way["railway"](${bb});way["waterway"](${bb});way["natural"](${bb});way["landuse"](${bb});way["leisure"](${bb});way["amenity"](${bb});node["name"](${bb});node["railway"="station"](${bb}););out geom;`;
   for (let i = 0; i < ENDPOINTS.length; i++) {
     try {
-      msg(`OpenStreetMap မှ သာစည်မြေပုံ ရယူနေသည်… (${my(i + 1)}/${my(ENDPOINTS.length)})`);
+      msg(`OpenStreetMap မှ သာစည်မြေပုံ ရယူနေသည်… (${my(i + 1)}/${my(ENDPOINTS.length)})`, 0.1 + i * 0.07);
       const ctl = new AbortController(); const to = setTimeout(() => ctl.abort(), 45000);
       const r = await fetch(ENDPOINTS[i], { method: 'POST', body: 'data=' + encodeURIComponent(q), headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, signal: ctl.signal });
       clearTimeout(to);
       if (!r.ok) continue;
       const j = await r.json();
       if (!j.elements || !j.elements.length) continue;
+      msg('မြေပုံကို ဖတ်နေသည်…', 0.4);
       const n = normalize(j);
       try { localStorage.setItem(CACHE_KEY, JSON.stringify(n)); } catch (e) {}
       return n;
@@ -116,7 +126,7 @@ export class Grid {
 }
 
 export class Builder {
-  constructor() { this.p = []; this.n = []; this.c = []; this.u = []; this.us = 4; }
+  constructor() { this.p = []; this.n = []; this.c = []; this.u = []; this.t = []; this.tile = -1; this.us = 4; }
   tri(a, b, c, cl, ref, ua, ub, uc) {
     const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2], vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
     let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
@@ -125,7 +135,7 @@ export class Builder {
     const l = Math.hypot(nx, ny, nz) || 1; nx /= l; ny /= l; nz /= l;
     this.p.push(a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2]);
     this.u.push(ua[0], ua[1], ub[0], ub[1], uc[0], uc[1]);
-    for (let i = 0; i < 3; i++) { this.n.push(nx, ny, nz); this.c.push(cl.r, cl.g, cl.b); }
+    for (let i = 0; i < 3; i++) { this.n.push(nx, ny, nz); this.c.push(cl.r, cl.g, cl.b); if (this.tile >= 0) this.t.push(this.tile); }
   }
   quad(a, b, c, d, cl, ref, ua, ub, uc, ud) { this.tri(a, b, c, cl, ref, ua, ub, uc); this.tri(a, c, d, cl, ref, ua, uc, ud); }
   seg(ax, az, bx, bz, w, y, cl) {
@@ -152,6 +162,7 @@ export class Builder {
     g.setAttribute('normal', new THREE.Float32BufferAttribute(this.n, 3));
     g.setAttribute('color', new THREE.Float32BufferAttribute(this.c, 3));
     g.setAttribute('uv', new THREE.Float32BufferAttribute(this.u, 2));
+    if (this.t.length * 3 === this.p.length) g.setAttribute('aTile', new THREE.Float32BufferAttribute(this.t, 1));
     g.computeBoundingSphere();
     return g;
   }

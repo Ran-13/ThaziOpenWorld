@@ -6,7 +6,7 @@ import { std, tube, bake, makeBike, makePagoda, makePagodaMats, makeStation, mak
 import { loadAssets, cloneAsset, instancedFromAsset } from './assets.js';
 import { makeComposer, makeSky, makeWaterMaterial, makeMotes, makePuffs } from './fx.js';
 
-const { BB, px, pz, HW, HH, BX, BZ, MR, UP, my, rnd, pick, mpick, col, MAJOR, DRIVE, WALLS, CAR_COLS, ITEMS, pip, area, centroid, segDist, clipSeg, Grid, Builder } = O;
+const { BB, px, pz, HW, HH, BX, BZ, MR, UP, my, rnd, pick, mpick, col, MAJOR, DRIVE, WALLS, BRICKS, CAR_COLS, ITEMS, pip, area, centroid, segDist, clipSeg, Grid, Builder, bhash, h01 } = O;
 export { my };
 const UNPAVED = /unpaved|dirt|ground|gravel|sand|earth|compacted/;
 const TIN = ['#d6dadd', '#c9ccd0', '#b98d6a', '#a85a44', '#6f8fa6', '#7f9a7a', '#e0e2e4', '#c08a5a'];
@@ -63,35 +63,44 @@ export async function createGame(o) {
   const nowHour = () => { const d = new Date(); return d.getHours() + d.getMinutes() / 60 + d.getSeconds() / 3600; };
   const best = opts.quality !== 'Fast';
   const mobile = typeof matchMedia !== 'undefined' && matchMedia('(pointer: coarse)').matches;
-  const MAXPR = Math.min(window.devicePixelRatio || 1, best ? (mobile ? 1.5 : 2) : 1);
-  let pr = mobile ? Math.min(1, MAXPR) : MAXPR;
-  const msg = m => hud({ loading: true, loadMsg: m });
+  // A sharp frame beats a blurred, bloomed one on a phone: skip post-processing there and put
+  // the budget into pixel ratio instead. (The tilt-shift pass is literally a blur.)
+  const post = best && !mobile;
+  // A laptop at DPR 2 capped to 2 renders at its native resolution. A phone at DPR 3 capped to 2
+  // renders only 44% of its native pixels and the browser upscales the rest - that is the blur.
+  // With post-processing off on phones there is budget to render native; the adaptive loop
+  // below backs the ratio off if the device cannot hold it.
+  const MAXPR = Math.min(window.devicePixelRatio || 1, best ? (post ? 2 : 3) : 1.25);
+  let pr = MAXPR;
+  let prog = 0;
+  const msg = (m, p) => { if (p != null) prog = p; hud({ loading: true, loadMsg: m, progress: prog }); };
 
-  msg('စတင်နေသည်…');
+  msg('စတင်နေသည်…', 0.03);
+  msg('စတင်နေသည်…', 0.08);
   const [data0, assets] = await Promise.all([O.fetchOSM(msg), loadAssets(modelsBase, msg)]);
-  let data = data0; if (!data) { msg('အင်တာနက် မရပါ — နမူနာမြို့ကို တည်ဆောက်နေသည်…'); data = O.fallbackData(); }
+  let data = data0; if (!data) { msg('အင်တာနက် မရပါ — နမူနာမြို့ကို တည်ဆောက်နေသည်…', 0.45); data = O.fallbackData(); }
   try { if (document.fonts && document.fonts.ready) await document.fonts.ready; } catch (e) {}
-  msg('မြို့ကို တည်ဆောက်နေသည်…');
+  msg('မြို့ကို တည်ဆောက်နေသည်…', 0.5);
   await new Promise(r => setTimeout(r, 30));
   const TX = makeTextures();
   const W = O.parse(data);
   const isMobile = typeof matchMedia !== 'undefined' && matchMedia('(pointer: coarse)').matches;
   const sat = opts.ground === 'Satellite' ? await loadSatellite(msg, isMobile) : null;
-  msg('မြို့ကို တည်ဆောက်နေသည်…');
+  msg('မြို့ကို တည်ဆောက်နေသည်…', 0.58);
   const satRoof = (x, z) => { if (!sat) return null; const d = sat.sample, u = (x - sat.wx0) / (sat.wx1 - sat.wx0), v = (z - sat.wz0) / (sat.wz1 - sat.wz0); const ix = Math.floor(u * d.width), iy = Math.floor(v * d.height); if (ix < 0 || iy < 0 || ix >= d.width || iy >= d.height) return null; const i = (iy * d.width + ix) * 4, r = d.data[i], gg = d.data[i + 1], b = d.data[i + 2]; if (gg > r * 1.06 && gg > b) return null; const c = new THREE.Color().setRGB(r / 255, gg / 255, b / 255, THREE.SRGBColorSpace); return c.lerp(new THREE.Color(1, 1, 1), 0.18); };
 
   // ---------- renderer / scene ----------
-  const renderer = new THREE.WebGLRenderer({ antialias: !best, powerPreference: 'high-performance' });
+  const renderer = new THREE.WebGLRenderer({ antialias: !post, powerPreference: 'high-performance' });
   renderer.setPixelRatio(pr);
-  renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.shadowMap.enabled = !mobile; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 0.92;
   container.appendChild(renderer.domElement);
   Object.assign(renderer.domElement.style, { position: 'absolute', inset: '0', width: '100%', height: '100%', display: 'block', touchAction: 'none' });
   const scene = new THREE.Scene();
   const pmrem = new THREE.PMREMGenerator(renderer);
-  scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
-  const camera = new THREE.PerspectiveCamera(46, 1, 1.0, 1400);
-  scene.fog = new THREE.Fog(0xbfe4f5, 320, 1250);
+  if (!mobile) scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+  const camera = new THREE.PerspectiveCamera(46, 1, 1.0, mobile ? 520 : 1400);
+  scene.fog = new THREE.Fog(0xbfe4f5, mobile ? 120 : 320, mobile ? 480 : 1250);
   const CHUNK = 160, ck = (x, z) => Math.floor(x / CHUNK) + ',' + Math.floor(z / CHUNK);
   class ChunkB {
     constructor(us) { this.m = new Map(); this.us = us; }
@@ -103,8 +112,8 @@ export async function createGame(o) {
     quadUV(aL, bL, bR, aR, y, c, v0, v1) { const cx = (aL[0] + bL[0] + bR[0] + aR[0]) / 4, cz = (aL[1] + bL[1] + bR[1] + aR[1]) / 4; this.at(cx, cz).quad([aL[0], y, aL[1]], [bL[0], y, bL[1]], [bR[0], y, bR[1]], [aR[0], y, aR[1]], c, UP, [0, v0], [0, v1], [1, v1], [1, v0]); }
     meshes(mat, cast, recv, order) { for (const b of this.m.values()) if (!b.empty) { const me = b.mesh(mat); me.castShadow = cast; me.receiveShadow = recv; if (order) me.renderOrder = order; scene.add(me); } }
   }
-  const sky = makeSky(); scene.add(sky);
-  const hemi = new THREE.HemisphereLight(0xdff2ff, 0xc9b48a, 0.8); scene.add(hemi);
+  const sky = makeSky(!mobile); scene.add(sky);
+  const hemi = new THREE.HemisphereLight(0xdff2ff, 0xc9b48a, mobile ? 1.35 : 0.8); scene.add(hemi);
   const sun = new THREE.DirectionalLight(0xffffff, 2.2); sun.castShadow = true;
   const SH = best && !mobile ? 2048 : 1024, SR = 50;
   sun.shadow.mapSize.set(SH, SH); Object.assign(sun.shadow.camera, { left: -SR, right: SR, top: SR, bottom: -SR, near: 1, far: 420 });
@@ -135,6 +144,12 @@ export async function createGame(o) {
   let stationPoi = W.pois.find(p => p.tags.railway === 'station');
   const railSegs = [];
   for (const r of W.rails) for (let i = 0; i < r.pts.length - 1; i++) { const c = clipSeg(r.pts[i][0], r.pts[i][1], r.pts[i + 1][0], r.pts[i + 1][1]); if (c) railSegs.push(c); }
+  // Rails get their own index rather than going into `obs`: blockedR() is built on blocked(),
+  // so an obstacle here would stop the player ever crossing the tracks.
+  const RAIL_HW = 6;                       // matches the station platform band (x 2.1 -> 7.1)
+  const railG = new Grid(25);
+  for (const c of railSegs) railG.add(c, Math.min(c[0], c[2]) - RAIL_HW, Math.min(c[1], c[3]) - RAIL_HW, Math.max(c[0], c[2]) + RAIL_HW, Math.max(c[1], c[3]) + RAIL_HW);
+  const railClear = (x, z) => { let m = 1e9; for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++) for (const s of railG.q(x + i * 25, z + j * 25)) { const d = segDist(x, z, s[0], s[1], s[2], s[3]); if (d < m) m = d; } return m; };
   let stationRects = [];
   if (railSegs.length) {
     const ref = stationPoi || { x: 0, z: 0 };
@@ -154,9 +169,19 @@ export async function createGame(o) {
     }
   }
 
+  // OSM maps buildings right up to (and over) the track; drop anything inside the corridor
+  if (railSegs.length) {
+    for (const b of W.buildings) {
+      if (b.dead) continue;
+      const [cx, cz] = centroid(b.pts);
+      if (railClear(cx, cz) < RAIL_HW || b.pts.some(p => railClear(p[0], p[1]) < RAIL_HW)) { b.dead = true; b.ob.dead = true; }
+    }
+    W.buildings = W.buildings.filter(b => !b.dead);
+  }
+
   // ---------- procedural infill ----------
   if (W.buildings.length < 400) {
-    msg('အိမ်ခြေများ ဖြည့်စွက်နေသည်…');
+    msg('အိမ်ခြေများ ဖြည့်စွက်နေသည်…', 0.68);
     const FILL = new Set(['residential', 'unclassified', 'tertiary', 'secondary', 'primary', 'living_street', 'service', 'road', 'track']);
     let added = 0;
     for (const s of roadSegs) {
@@ -169,7 +194,7 @@ export async function createGame(o) {
         const dep = 6 + rnd() * 4.5, wid = 5.5 + rnd() * 3.5, off = r.w / 2 + 2.6 + dep / 2;
         const cx = s[0] + fx * d + nx * side * off, cz = s[1] + fz * d + nz * side * off;
         const c = [[-wid / 2, -dep / 2], [wid / 2, -dep / 2], [wid / 2, dep / 2], [-wid / 2, dep / 2]].map(([u, v]) => [cx + fx * u + nx * v, cz + fz * u + nz * v]);
-        if (c.some(p => Math.abs(p[0]) > BX - 3 || Math.abs(p[1]) > BZ - 3 || blocked(p[0], p[1]) || roadClear(p[0], p[1]) < 1.0) || blocked(cx, cz)) continue;
+        if (c.some(p => Math.abs(p[0]) > BX - 3 || Math.abs(p[1]) > BZ - 3 || blocked(p[0], p[1]) || roadClear(p[0], p[1]) < 1.0 || railClear(p[0], p[1]) < RAIL_HW) || blocked(cx, cz) || railClear(cx, cz) < RAIL_HW) continue;
         const b = { pts: c, tags: { building: 'house' }, proc: true }; b.ob = addObs(c, 'b'); W.buildings.push(b); added++;
       }
     }
@@ -264,8 +289,11 @@ export async function createGame(o) {
   const plinth = new THREE.Mesh(new THREE.BoxGeometry(BX * 2 + 40, 3, BZ * 2 + 40), std(0x4e3522, { map: TX.wood, roughness: 0.6 })); plinth.position.y = -9.5; scene.add(plinth);
 
   // ---------- buildings ----------
-  msg('အဆောက်အအုံများ ဆောက်နေသည်…');
-  const WB = { bamboo: new ChunkB(), wood: new ChunkB(), plaster: new ChunkB() }, RBc = new ChunkB(), UBc = new ChunkB(), CBc = new ChunkB();
+  msg('အဆောက်အအုံများ ဆောက်နေသည်…', 0.78);
+  await new Promise(r => setTimeout(r, 16));
+  const WB = new ChunkB(), RFc = new ChunkB();
+  const TILE = { bamboo: 0, wood: 1, plaster: 2 };
+  const R_TIN = 0, R_CONC = 1, R_PLAIN = 2;   // cells of the roof atlas
   const winLit = [], winDark = [], frames = [], doors = [], posts = [];
   const houseA = assets.houses || [], houseLists = houseA.map(() => []);
   const cAt = (pts) => centroid(pts);
@@ -273,24 +301,56 @@ export async function createGame(o) {
     const pts = b.pts; if (pts.length < 3) continue;
     const ar = area(pts); if (ar < 6) continue;
     const t = b.tags, [cx, cz] = cAt(pts);
-    const small = b.proc || ar < 140;
     const ns = houseA.length && pts.length === 4 && ar < 260 ? nearSeg(cx, cz) : null;
     if (ns && ns[1] && ns[0] < 9 && MAJOR.has(ns[1][6].type)) {
       const [p0, p1, p2] = pts, e0 = Math.hypot(p1[0] - p0[0], p1[1] - p0[1]), e1 = Math.hypot(p2[0] - p1[0], p2[1] - p1[1]);
       const ua = e0 >= e1 ? [p1[0] - p0[0], p1[1] - p0[1]] : [p2[0] - p1[0], p2[1] - p1[1]], lu = Math.max(e0, e1), lv = Math.min(e0, e1);
       const ux = ua[0] / lu, uz = ua[1] / lu; let th = Math.atan2(-uz, ux);
       const fz = [Math.sin(th), Math.cos(th)]; if (roadClear(cx + fz[0] * 6, cz + fz[1] * 6) > roadClear(cx - fz[0] * 6, cz - fz[1] * 6)) th += Math.PI;
-      const k = Math.floor(rnd() * houseA.length), sz = houseA[k].size, sx = lu / Math.max(sz.x, 0.1), szz = lv / Math.max(sz.z, 0.1);
-      houseLists[k].push([cx, cz, th, sx, (5.5 + rnd() * 2.5) / Math.max(sz.y, 0.1), szz]); continue;
+      const k = Math.floor(rnd() * houseA.length), sz = houseA[k].size;
+      const sx = lu / Math.max(sz.x, 0.1), szz = lv / Math.max(sz.z, 0.1), jit = 0.98 + rnd() * 0.04;
+      // Stretching the model to fill the plot skewed it on every lot. Only take the GLB when the
+      // plot matches the model's proportions; then scale uniformly and leave the rest of the lot
+      // empty. Otherwise fall through and build the shop procedurally.
+      if (Math.max(sx, szz) / Math.max(1e-3, Math.min(sx, szz)) < 1.35) {
+        const su = Math.min(sx, szz) * jit;
+        houseLists[k].push([cx, cz, th, su, su, su]); continue;
+      }
     }
-    const kind = small ? (rnd() < 0.55 ? 'bamboo' : 'wood') : 'plaster';
-    const stilt = small && rnd() < 0.45, y0 = stilt ? 1.3 : 0;
-    let levels = small ? 1 : (parseInt(t['building:levels']) || (ar > 500 ? 2 : (rnd() < 0.45 ? 2 : 1)));
-    levels = Math.min(levels, 8);
-    const h = parseFloat(t.height) || (y0 + levels * 3.0 + (small ? 0.3 : 0.5));
+    // The OSM data here is tag-less (6,347 of 6,351 are a bare building=yes), so the house
+    // type has to be inferred from footprint size, shape and road context instead.
+    const quad = pts.length === 4;
+    let fLu = 0, fLv = 0;
+    if (quad) { const q0 = Math.hypot(pts[1][0] - pts[0][0], pts[1][1] - pts[0][1]), q1 = Math.hypot(pts[2][0] - pts[1][0], pts[2][1] - pts[1][1]); fLu = Math.max(q0, q1); fLv = Math.min(q0, q1); }
+    const asp = fLv > 0.5 ? fLu / fLv : 1;
+    const nr = ns || nearSeg(cx, cz);
+    const roadD = nr[1] ? nr[0] : 1e9, major = !!(nr[1] && MAJOR.has(nr[1][6].type)), drive = !!(nr[1] && DRIVE.has(nr[1][6].type));
+    const hb = bhash(cx, cz);
+    const type = (ar >= 320 || (!quad && ar >= 180)) ? 'block'
+      : ar < 22 ? 'hut'
+      : (quad && asp >= 1.9 && drive && roadD < 16 && ar >= 42) ? 'shop'
+      : ar >= 150 ? 'hall'
+      : h01(hb, 0) < (ar >= 60 ? (major && roadD < 14 ? 0.50 : 0.40) : (major && roadD < 14 ? 0.34 : 0.24)) ? 'brick'
+      : h01(hb, 1) < (!drive || roadD > 16 ? 0.50 : 0.34) ? 'stilt'
+      : 'tin';
+    const lowRise = type === 'hut' || type === 'tin' || type === 'stilt' || type === 'brick';
+    const stilt = type === 'stilt', y0 = stilt ? 1.05 + h01(hb, 2) * 0.55 : 0;
+    const levels = type === 'shop' ? 2 : type === 'block' ? Math.min(8, parseInt(t['building:levels']) || (ar > 500 ? 3 : 2)) : 1;
+    const storeyH = type === 'hut' ? 2.3 : type === 'shop' ? 3.3 : type === 'hall' ? 4.0 : 2.9;
+    const h = parseFloat(t.height) || (y0 + levels * storeyH + (type === 'hut' ? 0.1 : 0.35));
+    const brickWall = type === 'brick' && h01(hb, 3) < 0.6;
+    const kind = (type === 'hut' || type === 'tin' || type === 'stilt') ? (h01(hb, 3) < 0.5 ? 'bamboo' : 'wood') : 'plaster';
     const v = 0.9 + rnd() * 0.15;
-    const wc = kind === 'plaster' ? col(pick(WALLS)) : kind === 'wood' ? col(pick(WOODS)) : new THREE.Color(v, v * 0.98, v * 0.95);
-    const B = WB[kind].at(cx, cz), RB = RBc.at(cx, cz), UB = UBc.at(cx, cz), CB = CBc.at(cx, cz);
+    const wc = brickWall ? col(pick(BRICKS)) : kind === 'plaster' ? col(pick(WALLS)) : kind === 'wood' ? col(pick(WOODS)) : new THREE.Color(v, v * 0.98, v * 0.95);
+    const roof = type === 'block' ? 'flat'
+      : type === 'hut' ? (h01(hb, 4) < 0.7 ? 'skillion' : 'gable')
+      : type === 'brick' ? (h01(hb, 4) < 0.55 ? 'hip' : h01(hb, 5) < 0.45 ? 'flat' : 'skillion')
+      : type === 'hall' ? (h01(hb, 4) < 0.8 ? 'hip' : 'gable')
+      : type === 'shop' ? (h01(hb, 4) < 0.6 ? 'gable' : 'skillion')
+      : type === 'tin' ? (h01(hb, 4) < 0.65 ? 'hip' : 'gable')
+      : (h01(hb, 4) < 0.7 ? 'gable' : 'hip');
+    const B = WB.at(cx, cz), RB = RFc.at(cx, cz), UB = RB, CB = RB;   // roofs share one builder, keyed by tile
+    B.tile = TILE[kind];
     let doorEdge = -1, dmin = 1e9;
     for (let i = 0; i < pts.length; i++) { const a = pts[i], c = pts[(i + 1) % pts.length]; if (Math.hypot(c[0] - a[0], c[1] - a[1]) < 2.4) continue; const d = roadClear((a[0] + c[0]) / 2, (a[1] + c[1]) / 2); if (d < dmin) { dmin = d; doorEdge = i; } }
     let cum = 0;
@@ -304,8 +364,8 @@ export async function createGame(o) {
       const rot = Math.atan2(nx, nz);
       if (stilt) { posts.push([a[0], 0, a[1], 0, y0]); if (L > 4) posts.push([(a[0] + c[0]) / 2, 0, (a[1] + c[1]) / 2, 0, y0]); }
       if (i === doorEdge) doors.push([a[0] + dx * 0.5 + nx * 0.06, y0 + 1.05, a[1] + dz * 0.5 + nz * 0.06, rot]);
-      if (L > 2.6 && winLit.length + winDark.length < 16000) {
-        let n = small ? Math.floor(L / 3.0) : Math.floor((L - 0.8) / 2.6);
+      if (type !== 'hut' && L > 2.6 && winLit.length + winDark.length < 16000) {
+        let n = lowRise ? Math.floor(L / 3.0) : Math.floor((L - 0.8) / 2.6);
         if (i === doorEdge && n % 2 === 1) n--;
         for (let k = 0; k < n; k++) for (let f = 0; f < levels; f++) {
           const tt = (k + 0.5) / n, wx = a[0] + dx * tt, wz = a[1] + dz * tt, wy = y0 + 1.55 + f * 3.0;
@@ -314,38 +374,92 @@ export async function createGame(o) {
         }
       }
     }
-    if (stilt) UB.poly(pts, y0, col('#7a5a3e'), true);
+    if (stilt) { UB.tile = R_PLAIN; UB.poly(pts, y0, col('#7a5a3e'), true); }
     const rc = satRoof(cx, cz) || col(pick(TIN));
-    if (pts.length === 4 && ar < 420) {
+    if (quad && ar < 420 && roof !== 'flat') {
       const [p0, p1, p2] = pts;
       const e0 = Math.hypot(p1[0] - p0[0], p1[1] - p0[1]), e1 = Math.hypot(p2[0] - p1[0], p2[1] - p1[1]);
       const [a, bb, c, d] = e0 >= e1 ? pts : [pts[1], pts[2], pts[3], pts[0]];
       const lu = Math.hypot(bb[0] - a[0], bb[1] - a[1]), lv = Math.hypot(d[0] - a[0], d[1] - a[1]);
       const ux = [(bb[0] - a[0]) / lu, (bb[1] - a[1]) / lu], vx = [(d[0] - a[0]) / lv, (d[1] - a[1]) / lv];
-      const oh = small ? 0.6 : 0.45, rh = lv * (small ? 0.42 : 0.3) + 0.3, sl = rh / (lv / 2), ey = h - sl * oh;
+      const pitch = roof === 'skillion' ? 0.22 : roof === 'hip' ? 0.34 : (lowRise ? 0.42 : 0.3);
+      const oh = lowRise ? 0.6 : 0.45, rh = lv * pitch + 0.3, sl = rh / (lv / 2), ey = h - sl * oh;
       const P = (p, du, dv, y) => [p[0] + ux[0] * du + vx[0] * dv, y, p[1] + ux[1] * du + vx[1] * dv];
       const A = P(a, -oh, -oh, ey), Bv = P(bb, oh, -oh, ey), C = P(c, oh, oh, ey), D = P(d, -oh, oh, ey);
       const m1 = [(bb[0] + c[0]) / 2, (bb[1] + c[1]) / 2], m3 = [(d[0] + a[0]) / 2, (d[1] + a[1]) / 2];
       const M1 = P(m1, oh, 0, h + rh), M3 = P(m3, -oh, 0, h + rh);
       const ref = (...q) => [q.reduce((s, p) => s + p[0], 0) / q.length - cx, q.reduce((s, p) => s + p[1], 0) / q.length - (h - 1), q.reduce((s, p) => s + p[2], 0) / q.length - cz];
       const uv = p => [(p[0] * ux[0] + p[2] * ux[1]) / 1.1, (p[0] * vx[0] + p[2] * vx[1]) / 1.1 + p[1] / 1.1];
-      const rtri = (q1, q2, q3) => { RB.tri(q1, q2, q3, rc, ref(q1, q2, q3), uv(q1), uv(q2), uv(q3)); const r = ref(q1, q2, q3); UB.tri(q1, q2, q3, col('#5e4a3a'), [-r[0], -r[1], -r[2]]); };
-      rtri(A, Bv, M1); rtri(A, M1, M3); rtri(C, D, M3); rtri(C, M3, M1);
-      const G1 = [bb[0], h, bb[1]], G2 = [c[0], h, c[1]], G3 = [d[0], h, d[1]], G4 = [a[0], h, a[1]], Mg1 = [m1[0], h + rh, m1[1]], Mg3 = [m3[0], h + rh, m3[1]];
-      B.tri(G1, G2, Mg1, wc, ref(G1, G2, Mg1), [0, h / 2], [lv / 2, h / 2], [lv / 4, (h + rh) / 2]);
-      B.tri(G3, G4, Mg3, wc, ref(G3, G4, Mg3), [0, h / 2], [lv / 2, h / 2], [lv / 4, (h + rh) / 2]);
+      const rtri = (q1, q2, q3) => { RB.tile = R_TIN; RB.tri(q1, q2, q3, rc, ref(q1, q2, q3), uv(q1), uv(q2), uv(q3)); const r = ref(q1, q2, q3); UB.tile = R_PLAIN; UB.tri(q1, q2, q3, col('#5e4a3a'), [-r[0], -r[1], -r[2]]); };
+      if (roof === 'skillion') {
+        // single slope, high side away from the street; two wedge infills on the short ends
+        const Ah = P(a, -oh, -oh, ey + rh), Bh = P(bb, oh, -oh, ey + rh);
+        rtri(Ah, Bh, C); rtri(Ah, C, D);
+        const Wa = [a[0], h, a[1]], Wb = [bb[0], h, bb[1]], Wc = [c[0], h, c[1]], Wd = [d[0], h, d[1]];
+        B.tri(Wb, Wc, Bh, wc, ref(Wb, Wc, Bh), [0, h / 2], [lv / 2, h / 2], [0, (h + rh) / 2]);
+        B.tri(Wd, Wa, Ah, wc, ref(Wd, Wa, Ah), [0, h / 2], [lv / 2, h / 2], [lv / 2, (h + rh) / 2]);
+      } else if (roof === 'hip') {
+        // ridge pulled in from both ends, so the gable walls are replaced by two hip slopes
+        const inset = Math.min(lu * 0.32, lv * 0.5);
+        const M1h = P(m1, oh - inset, 0, h + rh), M3h = P(m3, -oh + inset, 0, h + rh);
+        rtri(A, Bv, M1h); rtri(A, M1h, M3h); rtri(C, D, M3h); rtri(C, M3h, M1h);
+        rtri(Bv, C, M1h); rtri(D, A, M3h);
+      } else {
+        rtri(A, Bv, M1); rtri(A, M1, M3); rtri(C, D, M3); rtri(C, M3, M1);
+        const G1 = [bb[0], h, bb[1]], G2 = [c[0], h, c[1]], G3 = [d[0], h, d[1]], G4 = [a[0], h, a[1]], Mg1 = [m1[0], h + rh, m1[1]], Mg3 = [m3[0], h + rh, m3[1]];
+        B.tri(G1, G2, Mg1, wc, ref(G1, G2, Mg1), [0, h / 2], [lv / 2, h / 2], [lv / 4, (h + rh) / 2]);
+        B.tri(G3, G4, Mg3, wc, ref(G3, G4, Mg3), [0, h / 2], [lv / 2, h / 2], [lv / 4, (h + rh) / 2]);
+      }
     } else {
+      CB.tile = R_CONC;
       CB.poly(pts, h - 0.45, col('#dcd6cc'));
       for (let i = 0; i < pts.length; i++) { const a = pts[i], c = pts[(i + 1) % pts.length]; const mx = (a[0] + c[0]) / 2, mz = (a[1] + c[1]) / 2; CB.quad([a[0], h - 0.45, a[1]], [c[0], h - 0.45, c[1]], [c[0], h, c[1]], [a[0], h, a[1]], wc, [cx - mx, 0, cz - mz]); }
       CB.poly(pts.map(p => [p[0], p[1]]), h, col('#efe9de'));
     }
   }
-  const wallMats = { bamboo: std(0xffffff, { map: TX.bamboo, vertexColors: true, roughness: 0.92 }), wood: std(0xffffff, { map: TX.wood, vertexColors: true, roughness: 0.85 }), plaster: std(0xffffff, { map: TX.plaster, vertexColors: true, roughness: 0.92 }) };
+  // All walls share one atlased material. The UVs tile (u = cum/2), so the cell lookup needs
+  // fract(); that breaks the GPU's derivative-based mip choice, hence the explicit textureGrad.
+  // The derivatives are clamped so a distant wall can never pick a mip coarse enough to bleed
+  // between atlas cells.
+  const wallMat = std(0xffffff, { map: TX.wallAtlas, vertexColors: true, roughness: 0.9 });
+  wallMat.onBeforeCompile = sh => {
+    sh.vertexShader = 'attribute float aTile;\nvarying float vTile;\n' +
+      sh.vertexShader.replace('#include <uv_vertex>', '#include <uv_vertex>\n\tvTile = aTile;');
+    sh.fragmentShader = 'varying float vTile;\n' +
+      sh.fragmentShader.replace('#include <map_fragment>', [
+        '#ifdef USE_MAP',
+        '  vec2 cell = vec2( mod( vTile, 2.0 ), floor( vTile * 0.5 ) ) * 0.5;',
+        '  vec2 dx = clamp( dFdx( vMapUv ) * 0.5, -0.05, 0.05 );',
+        '  vec2 dy = clamp( dFdy( vMapUv ) * 0.5, -0.05, 0.05 );',
+        '  diffuseColor *= textureGrad( map, cell + fract( vMapUv ) * 0.5, dx, dy );',
+        '#endif',
+      ].join('\n'));
+  };
   houseA.forEach((h, i) => houseLists[i].length && instancedFromAsset(h, houseLists[i], scene));
-  for (const k in WB) WB[k].meshes(wallMats[k], true, true);
-  RBc.meshes(new THREE.MeshStandardMaterial({ map: TX.tin, vertexColors: true, metalness: 0.6, roughness: 0.4 }), true, true);
-  UBc.meshes(std(0xffffff, { vertexColors: true, roughness: 0.9 }), false, true);
-  CBc.meshes(std(0xffffff, { vertexColors: true, map: TX.concrete, roughness: 0.95 }), true, true);
+  WB.meshes(wallMat, true, true);
+  // Roof tops, soffits and flat-roof slabs in one family. roughness/metalness come from the
+  // ORM atlas so tin keeps its sheen next to matte concrete under a single material.
+  const roofMat = std(0xffffff, { map: TX.roofAtlas, roughnessMap: TX.roofORM, metalnessMap: TX.roofORM, vertexColors: true, roughness: 1, metalness: 1 });
+  roofMat.onBeforeCompile = sh => {
+    sh.vertexShader = 'attribute float aTile;\nvarying float vTile;\n' +
+      sh.vertexShader.replace('#include <uv_vertex>', '#include <uv_vertex>\n\tvTile = aTile;');
+    // each chunk is inlined into the same main(), so the locals need distinct names
+    const cell = (uv, n) => [
+      `  vec2 cell${n} = vec2( mod( vTile, 2.0 ), floor( vTile * 0.5 ) ) * 0.5;`,
+      `  vec2 dx${n} = clamp( dFdx( ${uv} ) * 0.5, -0.05, 0.05 );`,
+      `  vec2 dy${n} = clamp( dFdy( ${uv} ) * 0.5, -0.05, 0.05 );`,
+    ].join('\n');
+    sh.fragmentShader = 'varying float vTile;\n' + sh.fragmentShader
+      .replace('#include <map_fragment>', ['#ifdef USE_MAP', cell('vMapUv', 'M'),
+        '  diffuseColor *= textureGrad( map, cellM + fract( vMapUv ) * 0.5, dxM, dyM );', '#endif'].join('\n'))
+      .replace('#include <roughnessmap_fragment>', ['float roughnessFactor = roughness;', '#ifdef USE_ROUGHNESSMAP',
+        cell('vRoughnessMapUv', 'R'),
+        '  roughnessFactor *= textureGrad( roughnessMap, cellR + fract( vRoughnessMapUv ) * 0.5, dxR, dyR ).g;', '#endif'].join('\n'))
+      .replace('#include <metalnessmap_fragment>', ['float metalnessFactor = metalness;', '#ifdef USE_METALNESSMAP',
+        cell('vMetalnessMapUv', 'E'),
+        '  metalnessFactor *= textureGrad( metalnessMap, cellE + fract( vMetalnessMapUv ) * 0.5, dxE, dyE ).b;', '#endif'].join('\n'));
+  };
+  RFc.meshes(roofMat, true, true);
   const litMat = new THREE.MeshBasicMaterial({ color: 0x3a4452, map: TX.windowLit });
   const WINC = ['#ffffff', '#ffffff', '#ffe2b8', '#ffd0a0', '#d9ecff', '#e8f6ff'].map(c => col(c));
   const winGeo = new THREE.PlaneGeometry(0.78, 0.95);
@@ -365,7 +479,7 @@ export async function createGame(o) {
 
   // ---------- trees & bushes ----------
   const trees = [];
-  const okTree = (x, z) => Math.abs(x) < BX - 2 && Math.abs(z) < BZ - 2 && !blocked(x, z) && roadClear(x, z) > 1.8;
+  const okTree = (x, z) => Math.abs(x) < BX - 2 && Math.abs(z) < BZ - 2 && !blocked(x, z) && roadClear(x, z) > 1.8 && railClear(x, z) > 3;
   for (const g of W.greens) {
     if (!g.trees) continue;
     const ar = area(g.pts), n = Math.min(300, Math.floor(ar / 900 * g.trees));
@@ -401,7 +515,7 @@ export async function createGame(o) {
 
   // ---------- street lamps ----------
   const lamps = [];
-  for (const s of roadSegs) { const r = s[6]; if (!MAJOR.has(r.type) || lamps.length > 500) continue; const dx = s[2] - s[0], dz = s[3] - s[1], L = Math.hypot(dx, dz); for (let d = 10; d < L; d += 36) { const off = r.w / 2 + 1.0, x = s[0] + dx * d / L - dz / L * off, z = s[1] + dz * d / L + dx / L * off; if (!blocked(x, z)) lamps.push([x, 0, z, Math.atan2(-dz, dx) + Math.PI / 2]); } }
+  for (const s of roadSegs) { const r = s[6]; if (!MAJOR.has(r.type) || lamps.length > 500) continue; const dx = s[2] - s[0], dz = s[3] - s[1], L = Math.hypot(dx, dz); for (let d = 10; d < L; d += 36) { const off = r.w / 2 + 1.0, x = s[0] + dx * d / L - dz / L * off, z = s[1] + dz * d / L + dx / L * off; if (!blocked(x, z) && railClear(x, z) > 3) lamps.push([x, 0, z, Math.atan2(-dz, dx) + Math.PI / 2]); } }
   const bulbMat = new THREE.MeshBasicMaterial({ color: 0xdddddd });
   if (lamps.length) {
     const pole = new THREE.CylinderGeometry(0.06, 0.1, 5, 6); pole.translate(0, 2.5, 0);
@@ -465,7 +579,7 @@ export async function createGame(o) {
     a.from = mpick(pool); a.to = mpick(a.from.adj); a.t = Math.random(); a.cur = a.speed;
     scene.add(a.g); agents.push(a);
   };
-  const TRAFFIC = { Quiet: [8, 12], Normal: [18, 24], Busy: [32, 44] };
+  const TRAFFIC = mobile ? { Quiet: [5, 6], Normal: [9, 11], Busy: [14, 18] } : { Quiet: [8, 12], Normal: [18, 24], Busy: [32, 44] };
   const setTraffic = lvl => {
     const [nv, np] = TRAFFIC[lvl] || TRAFFIC.Normal;
     const vs = agents.filter(a => a.type !== 'ped'), ps = agents.filter(a => a.type === 'ped');
@@ -579,7 +693,7 @@ export async function createGame(o) {
   };
 
   // ---------- fx ----------
-  const fx = best ? makeComposer(renderer, scene, camera, mobile ? 0 : 4) : null;
+  const fx = post ? makeComposer(renderer, scene, camera, 4) : null;
   const motes = null; if (motes) scene.add(motes.points);
   const puffs = makePuffs(); scene.add(puffs.points);
 
@@ -589,12 +703,20 @@ export async function createGame(o) {
 
   // ---------- loop ----------
   let perfAcc = 0, perfN = 0, hour = opts.realClock ? nowHour() : opts.startHour, dayMin = opts.dayMinutes, playing = false, camMode = 1, popup = null, popT = 0, hudT = 0, mmT = 0, envT = 0, bumpT = 0, puffT = 0, last = performance.now(), raf = 0, frozen = false;
-  const CAM = [{ d: 7.5, h: 3.4, blur: 0 }, { d: 15, h: 9, blur: 0.5 }, { d: 34, h: 30, blur: 1.1 }];
+  const CAM = [{ d: 6.5, h: 2.8, blur: 0 }, { d: 13, h: 7, blur: 0.4 }];
   const camPos = new THREE.Vector3(P.x - Math.sin(P.h) * 15, 9, P.z - Math.cos(P.h) * 15), look = new THREE.Vector3(), want = new THREE.Vector3();
   const SKY_TOP_D = col('#5fa8e0'), SKY_HOR_D = col('#cfe9f5'), SKY_TOP_N = col('#0b1226'), SKY_HOR_N = col('#22304f'), SKY_HOR_S = col('#f5a46e'), SKY_TOP_S = col('#6b6fa8');
   const tmp = new THREE.Color(), tmp2 = new THREE.Color(), WIN_D = col('#3a4452'), WIN_N = col('#ffffff'), BULB_D = col('#d6d6d6'), BULB_N = col('#ffe7a8'), MOON = col('#9fb4ff');
   const blockedR = (x, z) => Math.abs(x) > HW + 8 || Math.abs(z) > HH + 8 || blocked(x, z) || blocked(x + 0.45, z) || blocked(x - 0.45, z) || blocked(x, z + 0.45) || blocked(x, z - 0.45);
-  const resize = () => { const w = container.clientWidth || 1, h = container.clientHeight || 1; renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix(); if (fx) fx.setSize(w, h); puffs.mat.uniforms.uScale.value = h * renderer.getPixelRatio() / (2 * Math.tan(camera.fov * Math.PI / 360)); };
+  // three.js fov is VERTICAL, so a tall phone screen collapses the horizontal field: 46 deg
+  // vertical is 85 deg across in landscape but only 22 deg in portrait, magnifying the world
+  // ~4x and making every texel cover 4x the pixels - which reads as blur. Widen the vertical
+  // fov on narrow screens to hold a sane horizontal field. Landscape and desktop are untouched.
+  const FOV = 46, HFOV_MIN = 55, FOV_MAX = 72;
+  const resize = () => { const w = container.clientWidth || 1, h = container.clientHeight || 1; renderer.setSize(w, h, false); camera.aspect = w / h;
+    const want = 2 * Math.atan(Math.tan(HFOV_MIN * Math.PI / 360) / camera.aspect) * 180 / Math.PI;
+    camera.fov = Math.min(FOV_MAX, Math.max(FOV, want));
+    camera.updateProjectionMatrix(); if (fx) fx.setSize(w, h); puffs.mat.uniforms.uScale.value = h * renderer.getPixelRatio() / (2 * Math.tan(camera.fov * Math.PI / 360)); };
   const ro = new ResizeObserver(resize); ro.observe(container); resize();
   if (fx) fx.setBlur(CAM[camMode].blur);
 
@@ -602,8 +724,12 @@ export async function createGame(o) {
     raf = requestAnimationFrame(frame);
     const rawDt = (now - last) / 1000, dt = Math.min(0.05, rawDt); last = now;
     if (frozen) return;
-    perfAcc += rawDt; perfN++;
-    if (perfAcc > 1.5) { const avg = perfAcc / perfN; perfAcc = 0; perfN = 0; let np = pr; if (avg > 0.024) np = Math.max(0.6, pr - 0.15); else if (avg < 0.0145) np = Math.min(MAXPR, pr + 0.1); if (Math.abs(np - pr) > 0.01) { pr = np; renderer.setPixelRatio(pr); resize(); } }
+    if (playing && rawDt < 0.1) { perfAcc += rawDt; perfN++; }
+    // Hysteresis band: climb while a frame fits in 18 ms (a vsync-capped 60 Hz display sits at
+    // 16.7, so the old 14.5 ms gate was unreachable and the ratio could only ever fall), back off
+    // past 24 ms. The device settles at the sharpest resolution it can actually hold.
+    if (perfN > 30 && perfAcc > 1.5) { const avg = perfAcc / perfN; perfAcc = 0; perfN = 0; let np = pr; const drop = mobile ? 0.034 : 0.024, floor = mobile ? Math.min(2, MAXPR) : 0.6;
+      if (avg > drop) np = Math.max(floor, pr * (avg > drop * 1.7 ? 0.8 : 0.9)); else if (avg < (mobile ? 0.028 : 0.018)) np = Math.min(MAXPR, pr + 0.1); if (Math.abs(np - pr) > 0.01) { pr = np; renderer.setPixelRatio(pr); resize(); } }
     const tsec = now / 1000;
     let steer = 0, thr = 0;
     if (playing) {
@@ -713,7 +839,8 @@ export async function createGame(o) {
   raf = requestAnimationFrame(frame);
 
   const api = {
-    start() { ac(); playing = true; },
+    start() { ac(); playing = true; perfAcc = 0; perfN = 0; },   // fresh timing window
+    info: () => ({ calls: renderer.info.render.calls, tris: renderer.info.render.triangles, pr }),
     bell() { SND.bell(); for (const a of agents) if (a.type === 'ped' && Math.hypot(a.g.position.x - P.x, a.g.position.z - P.z) < 12) a.lane = Math.sign(a.lane || 1) * 4.3; },
     cycleCamera() { camMode = (camMode + 1) % CAM.length; if (fx) fx.setBlur(CAM[camMode].blur); },
     toggleMission() { if (mission) { cancelMission(); ev({ type: 'toast', text: 'အလုပ် ပယ်ဖျက်ပြီး' }); } else startMission(); },

@@ -23,17 +23,23 @@ export function makeComposer(renderer, scene, camera, samples = 0) {
   };
 }
 
-export function makeSky() {
+export function makeSky(sunDisc = true) {
   const mat = new THREE.ShaderMaterial({
     uniforms: { top: { value: new THREE.Color() }, horizon: { value: new THREE.Color() }, sunDir: { value: new THREE.Vector3(0, 1, 0) }, sunCol: { value: new THREE.Color() } },
     vertexShader: `varying vec3 vD; void main(){ vD = normalize(position); vec4 p = projectionMatrix * modelViewMatrix * vec4(position, 1.0); gl_Position = p.xyww; }`,
     fragmentShader: `uniform vec3 top; uniform vec3 horizon; uniform vec3 sunDir; uniform vec3 sunCol; varying vec3 vD;
       void main(){ vec3 d = normalize(vD); float h = clamp(d.y, 0.0, 1.0); vec3 c = mix(horizon, top, pow(h, 0.55));
-        float s = max(dot(d, normalize(sunDir)), 0.0); c += sunCol * (pow(s, 900.0) * 6.0 + pow(s, 10.0) * 0.3);
+        float s = max(dot(d, normalize(sunDir)), 0.0);
+        #ifdef SUN_DISC
+          c += sunCol * (pow(s, 900.0) * 6.0 + pow(s, 10.0) * 0.3);
+        #else
+          c += sunCol * (s * s * s * s * 0.35);   // the sky fills the screen; skip pow() on phones
+        #endif
         gl_FragColor = vec4(c, 1.0);
         #include <tonemapping_fragment>
         #include <colorspace_fragment>
       }`,
+    defines: sunDisc ? { SUN_DISC: '' } : {},
     side: THREE.BackSide, depthWrite: false, depthTest: true, fog: false,
   });
   const m = new THREE.Mesh(new THREE.SphereGeometry(2800, 32, 16), mat); m.renderOrder = -10; m.frustumCulled = false;

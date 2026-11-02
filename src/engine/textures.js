@@ -22,7 +22,7 @@ export function makeTextures() {
     for (let i = 0; i < 1400; i++) { x.fillStyle = `rgba(${110 + Math.random() * 60},${95 + Math.random() * 40},70,${Math.random() * 0.07})`; x.beginPath(); x.arc(Math.random() * w, Math.random() * h, 1 + Math.random() * 7, 0, 6.3); x.fill(); }
     grain(x, w, h, 0.9, 1.0);
   });
-  T.bamboo = cv(256, 256, (x, w, h) => {
+  const drawBamboo = (x, w, h) => {
     const c = 32;
     for (let i = 0; i < w / c; i++) for (let j = 0; j < h / c; j++) {
       const hor = (i + j) % 2 === 0;
@@ -33,25 +33,74 @@ export function makeTextures() {
       x.fillStyle = 'rgba(80,55,25,.28)'; x.fillRect(i * c, j * c, c, 1); x.fillRect(i * c, j * c, 1, c);
     }
     grain(x, w, h, 0.86, 1.0);
-  });
-  T.wood = cv(256, 256, (x, w, h) => {
+  };
+  const drawWood = (x, w, h) => {
     for (let j = 0; j < 8; j++) {
       const l = 160 + Math.random() * 45; x.fillStyle = `rgb(${l},${l * 0.72},${l * 0.48})`; x.fillRect(0, j * 32, w, 31);
       x.fillStyle = 'rgba(45,28,12,.55)'; x.fillRect(0, j * 32 + 31, w, 1);
       for (let k = 0; k < 26; k++) { x.fillStyle = `rgba(80,50,25,${Math.random() * 0.14})`; x.fillRect(0, j * 32 + Math.random() * 30, w, 1); }
     }
     grain(x, w, h, 0.9, 1);
-  });
-  T.tin = cv(64, 64, (x, w, h) => {
+  };
+  const drawTin = (x, w, h) => {
     for (let i = 0; i < w; i++) { const v = 0.72 + 0.28 * Math.sin(i / w * Math.PI * 2 * 4); const l = Math.round(240 * v); x.fillStyle = `rgb(${l},${l},${l})`; x.fillRect(i, 0, 1, h); }
     for (let i = 0; i < 25; i++) { x.fillStyle = `rgba(140,80,40,${Math.random() * 0.18})`; x.beginPath(); x.arc(Math.random() * w, Math.random() * h, 2 + Math.random() * 8, 0, 6.3); x.fill(); }
-  });
-  T.plaster = cv(256, 256, (x, w, h) => {
+  };
+  T.tin = cv(64, 64, drawTin);
+  const drawPlaster = (x, w, h) => {
     x.fillStyle = '#fff'; x.fillRect(0, 0, w, h);
     for (let i = 0; i < 40; i++) { const g = x.createRadialGradient(0, 0, 0, 0, 0, 40); const px = Math.random() * w, py = Math.random() * h; g.addColorStop(0, 'rgba(150,130,100,.10)'); g.addColorStop(1, 'rgba(150,130,100,0)'); x.save(); x.translate(px, py); x.fillStyle = g; x.fillRect(-40, -40, 80, 80); x.restore(); }
     grain(x, w, h, 0.93, 1);
-  });
-  T.concrete = cv(128, 128, (x, w, h) => { x.fillStyle = '#e6e1d8'; x.fillRect(0, 0, w, h); grain(x, w, h, 0.85, 1); x.strokeStyle = 'rgba(0,0,0,.08)'; x.strokeRect(0.5, 0.5, w - 1, h - 1); });
+  };
+  T.bamboo = cv(256, 256, drawBamboo);
+  T.wood = cv(256, 256, drawWood);
+  T.plaster = cv(256, 256, drawPlaster);
+  // One 2x2 atlas so all walls share a single material: three families of chunk meshes
+  // collapse into one. Each cell is painted on its own canvas because grain() reads
+  // getImageData from the origin and ignores canvas transforms.
+  T.wallAtlas = (() => {
+    const c = document.createElement('canvas'); c.width = c.height = 512;
+    const x = c.getContext('2d');
+    [drawBamboo, drawWood, drawPlaster, drawPlaster].forEach((fn, i) => {
+      const sub = document.createElement('canvas'); sub.width = sub.height = 256;
+      fn(sub.getContext('2d'), 256, 256);
+      // CanvasTexture uploads with flipY, so UV row 0 is the BOTTOM canvas row: lay the
+      // cells out bottom-up or tile 0 would sample the wrong quadrant.
+      x.drawImage(sub, (i % 2) * 256, 256 - Math.floor(i / 2) * 256);
+    });
+    const t = new THREE.CanvasTexture(c);
+    t.colorSpace = THREE.SRGBColorSpace;
+    t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;   // the shader does the tiling with fract()
+    t.anisotropy = 16;
+    return t;
+  })();
+  const drawConcrete = (x, w, h) => { x.fillStyle = '#e6e1d8'; x.fillRect(0, 0, w, h); grain(x, w, h, 0.85, 1); x.strokeStyle = 'rgba(0,0,0,.08)'; x.strokeRect(0.5, 0.5, w - 1, h - 1); };
+  T.concrete = cv(128, 128, drawConcrete);
+  // Roof atlas, same trick as the walls. Both generators are parametric, so painting them at
+  // cell size keeps their world scale and gains resolution rather than upscaling a small tile.
+  // cell 0 = corrugated tin, 1 = concrete, 2 = plain (roof soffits and stilt floors).
+  const atlas2 = (cells) => {
+    const c = document.createElement('canvas'); c.width = c.height = 512;
+    const x = c.getContext('2d');
+    cells.forEach((fn, i) => {
+      const sub = document.createElement('canvas'); sub.width = sub.height = 256;
+      fn(sub.getContext('2d'), 256, 256);
+      x.drawImage(sub, (i % 2) * 256, 256 - Math.floor(i / 2) * 256);   // flipY, see wallAtlas
+    });
+    return c;
+  };
+  const plain = (x, w, h) => { x.fillStyle = '#fff'; x.fillRect(0, 0, w, h); };
+  T.roofAtlas = (() => {
+    const t = new THREE.CanvasTexture(atlas2([drawTin, drawConcrete, plain, plain]));
+    t.colorSpace = THREE.SRGBColorSpace; t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping; t.anisotropy = 16; return t;
+  })();
+  // Per-cell surface response so one material can still give tin its sheen:
+  // three.js reads roughness from G and metalness from B.
+  T.roofORM = (() => {
+    const fill = (rough, metal) => (x, w, h) => { x.fillStyle = `rgb(0,${Math.round(rough * 255)},${Math.round(metal * 255)})`; x.fillRect(0, 0, w, h); };
+    const t = new THREE.CanvasTexture(atlas2([fill(0.4, 0.6), fill(0.95, 0), fill(0.9, 0), fill(0.9, 0)]));
+    t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping; return t;   // linear data, no colorSpace
+  })();
   T.longyi = (a, b) => cv(64, 64, (x, w, h) => {
     x.fillStyle = a; x.fillRect(0, 0, w, h);
     x.fillStyle = b; x.globalAlpha = 0.55; for (let i = 0; i < 4; i++) { x.fillRect(i * 16, 0, 6, h); x.fillRect(0, i * 16, w, 6); }
