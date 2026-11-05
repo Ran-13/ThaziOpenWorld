@@ -2,18 +2,22 @@ import * as THREE from './three.js';
 import { GLTFLoader, SkeletonUtils } from './addons.js';
 
 // Loads optional GLB models listed in <base>/models.json. Any slot without a file uses the built-in procedural model.
-export async function loadAssets(base, msg) {
+// opts.skip: slot names to ignore (phones skip heavy house/tree/person GLBs).
+export async function loadAssets(base, msg, opts = {}) {
   let manifest;
   try { const r = await fetch(base + 'models.json', { cache: 'no-cache' }); if (!r.ok) return {}; manifest = await r.json(); } catch (e) { return {}; }
-  const slots = Object.entries(manifest.slots || {}).filter(([, c]) => c && c.file && (!Array.isArray(c.file) || c.file.length));
+  const skip = new Set(opts.skip || []);
+  const slots = Object.entries(manifest.slots || {}).filter(([slot, c]) => !skip.has(slot) && c && c.file && (!Array.isArray(c.file) || c.file.length));
   if (!slots.length) return {};
   msg && msg(`3D model ${slots.length} ခု ဖွင့်နေသည်…`);
   const loader = new GLTFLoader(), out = {};
   await Promise.all(slots.map(async ([slot, cfg]) => {
     const files = Array.isArray(cfg.file) ? cfg.file : [cfg.file];
-    const res = await Promise.all(files.map(async f => { try { return prepare(await loader.loadAsync(base + f), cfg); } catch (e) { console.warn('[models] could not load', slot, f, e); return null; } }));
+    // Phones: one variant per slot is enough — random variety costs RAM for little visual gain.
+    const pick = opts.oneVariant ? [files[Math.floor(Math.random() * files.length)]] : files;
+    const res = await Promise.all(pick.map(async f => { try { return prepare(await loader.loadAsync(base + f), cfg); } catch (e) { console.warn('[models] could not load', slot, f, e); return null; } }));
     const ok = res.filter(Boolean); if (!ok.length) return;
-    out[slot] = Array.isArray(cfg.file) ? ok : ok[0];
+    out[slot] = (!opts.oneVariant && Array.isArray(cfg.file)) ? ok : ok[0];
   }));
   return out;
 }
@@ -54,7 +58,7 @@ export function cloneAsset(a) {
 // triangles for fewer draw calls, which is a net loss.
 const CHUNK = 160;
 
-export function instancedFromAsset(a, list, scene) {
+export function instancedFromAsset(a, list, scene, track) {
   const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler(), v = new THREE.Vector3(), s = new THREE.Vector3();
   a.scene.updateMatrixWorld(true);
   const cells = new Map();
@@ -62,10 +66,11 @@ export function instancedFromAsset(a, list, scene) {
   a.scene.traverse(o => {
     if (!o.isMesh) return;
     const base = o.matrixWorld.clone();
-    for (const part of cells.values()) {
+    for (const [k, part] of cells) {
       const im = new THREE.InstancedMesh(o.geometry, o.material, part.length);
       part.forEach((t, i) => { q.setFromEuler(e.set(0, t[2], 0)); m4.compose(v.set(t[0], 0, t[1]), q, t.length > 4 ? s.set(t[3], t[4], t[5]) : s.set(t[3], t[3], t[3])); m4.multiply(base); im.setMatrixAt(i, m4); });
       im.computeBoundingSphere(); im.castShadow = true; im.receiveShadow = true; scene.add(im);
+      if (track) { const c = k.split(','), ix = +c[0], iz = +c[1]; track(im, ix, iz); }
     }
   });
 }

@@ -17,40 +17,79 @@ function grain(x, w, h, a, b) {
 
 export function makeTextures() {
   const T = {};
-  T.ground = cv(256, 256, (x, w, h) => {
-    x.fillStyle = '#fff'; x.fillRect(0, 0, w, h);
-    for (let i = 0; i < 1400; i++) { x.fillStyle = `rgba(${110 + Math.random() * 60},${95 + Math.random() * 40},70,${Math.random() * 0.07})`; x.beginPath(); x.arc(Math.random() * w, Math.random() * h, 1 + Math.random() * 7, 0, 6.3); x.fill(); }
-    grain(x, w, h, 0.9, 1.0);
+  T.ground = cv(512, 512, (x, w, h) => {
+    x.fillStyle = '#e8d9b8'; x.fillRect(0, 0, w, h);
+    for (let i = 0; i < 2800; i++) {
+      const g = Math.random() < 0.35;
+      x.fillStyle = g
+        ? `rgba(${70 + Math.random() * 50},${110 + Math.random() * 50},${40 + Math.random() * 30},${0.04 + Math.random() * 0.08})`
+        : `rgba(${120 + Math.random() * 50},${95 + Math.random() * 40},${55 + Math.random() * 25},${Math.random() * 0.08})`;
+      x.beginPath(); x.arc(Math.random() * w, Math.random() * h, 0.8 + Math.random() * (g ? 3 : 8), 0, 6.3); x.fill();
+    }
+    grain(x, w, h, 0.88, 1.02);
   });
   const drawBamboo = (x, w, h) => {
     const c = 32;
     for (let i = 0; i < w / c; i++) for (let j = 0; j < h / c; j++) {
       const hor = (i + j) % 2 === 0;
       for (let k = 0; k < 4; k++) {
-        const l = 205 + Math.random() * 35; x.fillStyle = `rgb(${l},${l * 0.83},${l * 0.55})`;
+        const l = 198 + Math.random() * 42; x.fillStyle = `rgb(${l},${l * 0.84},${l * 0.52})`;
         if (hor) x.fillRect(i * c, j * c + k * 8, c, 7); else x.fillRect(i * c + k * 8, j * c, 7, c);
+        // Thin highlight edge so weave reads at glancing angles.
+        x.fillStyle = 'rgba(255,245,210,.18)';
+        if (hor) x.fillRect(i * c, j * c + k * 8, c, 1); else x.fillRect(i * c + k * 8, j * c, 1, c);
       }
-      x.fillStyle = 'rgba(80,55,25,.28)'; x.fillRect(i * c, j * c, c, 1); x.fillRect(i * c, j * c, 1, c);
+      x.fillStyle = 'rgba(70,45,18,.32)'; x.fillRect(i * c, j * c, c, 1); x.fillRect(i * c, j * c, 1, c);
     }
-    grain(x, w, h, 0.86, 1.0);
+    grain(x, w, h, 0.84, 1.02);
   };
   const drawWood = (x, w, h) => {
     for (let j = 0; j < 8; j++) {
-      const l = 160 + Math.random() * 45; x.fillStyle = `rgb(${l},${l * 0.72},${l * 0.48})`; x.fillRect(0, j * 32, w, 31);
-      x.fillStyle = 'rgba(45,28,12,.55)'; x.fillRect(0, j * 32 + 31, w, 1);
-      for (let k = 0; k < 26; k++) { x.fillStyle = `rgba(80,50,25,${Math.random() * 0.14})`; x.fillRect(0, j * 32 + Math.random() * 30, w, 1); }
+      const l = 150 + Math.random() * 50; x.fillStyle = `rgb(${l},${l * 0.7},${l * 0.45})`; x.fillRect(0, j * 32, w, 31);
+      x.fillStyle = 'rgba(40,22,10,.6)'; x.fillRect(0, j * 32 + 31, w, 1);
+      for (let k = 0; k < 40; k++) { x.fillStyle = `rgba(75,45,20,${Math.random() * 0.16})`; x.fillRect(0, j * 32 + Math.random() * 30, w * (0.2 + Math.random() * 0.8), 1); }
+      // Occasional knot
+      if (Math.random() < 0.35) {
+        const kx = 20 + Math.random() * (w - 40), ky = j * 32 + 8 + Math.random() * 14, kr = 3 + Math.random() * 5;
+        const g = x.createRadialGradient(kx, ky, 0, kx, ky, kr);
+        g.addColorStop(0, 'rgba(90,50,25,.55)'); g.addColorStop(1, 'rgba(90,50,25,0)');
+        x.fillStyle = g; x.beginPath(); x.arc(kx, ky, kr, 0, 6.3); x.fill();
+      }
     }
-    grain(x, w, h, 0.9, 1);
+    grain(x, w, h, 0.88, 1.02);
   };
   const drawTin = (x, w, h) => {
-    for (let i = 0; i < w; i++) { const v = 0.72 + 0.28 * Math.sin(i / w * Math.PI * 2 * 4); const l = Math.round(240 * v); x.fillStyle = `rgb(${l},${l},${l})`; x.fillRect(i, 0, 1, h); }
-    for (let i = 0; i < 25; i++) { x.fillStyle = `rgba(140,80,40,${Math.random() * 0.18})`; x.beginPath(); x.arc(Math.random() * w, Math.random() * h, 2 + Math.random() * 8, 0, 6.3); x.fill(); }
+    for (let i = 0; i < w; i++) {
+      const wave = Math.sin(i / w * Math.PI * 2 * 5);
+      const v = 0.62 + 0.28 * wave + 0.1 * Math.sin(i / w * Math.PI * 2 * 20);
+      const l = Math.round(235 * v); x.fillStyle = `rgb(${l},${Math.round(l * 0.98)},${Math.round(l * 0.94)})`; x.fillRect(i, 0, 1, h);
+    }
+    // Ridge highlights
+    for (let r = 0; r < 5; r++) {
+      const rx = ((r + 0.5) / 5) * w;
+      x.fillStyle = 'rgba(255,255,255,.22)'; x.fillRect(rx - 1, 0, 2, h);
+      x.fillStyle = 'rgba(40,40,50,.18)'; x.fillRect(rx + 3, 0, 2, h);
+    }
+    for (let i = 0; i < 30; i++) { x.fillStyle = `rgba(130,70,35,${Math.random() * 0.2})`; x.beginPath(); x.arc(Math.random() * w, Math.random() * h, 1.5 + Math.random() * 7, 0, 6.3); x.fill(); }
   };
-  T.tin = cv(64, 64, drawTin);
+  T.tin = cv(128, 128, drawTin);
   const drawPlaster = (x, w, h) => {
-    x.fillStyle = '#fff'; x.fillRect(0, 0, w, h);
-    for (let i = 0; i < 40; i++) { const g = x.createRadialGradient(0, 0, 0, 0, 0, 40); const px = Math.random() * w, py = Math.random() * h; g.addColorStop(0, 'rgba(150,130,100,.10)'); g.addColorStop(1, 'rgba(150,130,100,0)'); x.save(); x.translate(px, py); x.fillStyle = g; x.fillRect(-40, -40, 80, 80); x.restore(); }
-    grain(x, w, h, 0.93, 1);
+    x.fillStyle = '#f7f1e6'; x.fillRect(0, 0, w, h);
+    for (let i = 0; i < 70; i++) {
+      const g = x.createRadialGradient(0, 0, 0, 0, 0, 48);
+      const px = Math.random() * w, py = Math.random() * h;
+      g.addColorStop(0, `rgba(${140 + Math.random() * 40},${120 + Math.random() * 30},${90 + Math.random() * 20},${0.06 + Math.random() * 0.08})`);
+      g.addColorStop(1, 'rgba(150,130,100,0)');
+      x.save(); x.translate(px, py); x.fillStyle = g; x.fillRect(-48, -48, 96, 96); x.restore();
+    }
+    // Fine hairline cracks
+    x.strokeStyle = 'rgba(90,70,50,.08)'; x.lineWidth = 1;
+    for (let i = 0; i < 8; i++) {
+      let px = Math.random() * w, py = Math.random() * h; x.beginPath(); x.moveTo(px, py);
+      for (let j = 0; j < 6; j++) { px += (Math.random() - 0.5) * 28; py += 8 + Math.random() * 18; x.lineTo(px, py); }
+      x.stroke();
+    }
+    grain(x, w, h, 0.92, 1.02);
   };
   T.bamboo = cv(256, 256, drawBamboo);
   T.wood = cv(256, 256, drawWood);

@@ -24,13 +24,17 @@ export const mpick = a => a[Math.floor(Math.random() * a.length)];
 export const col = h => new THREE.Color(h);
 
 const ENDPOINTS = ['https://overpass-api.de/api/interpreter', 'https://overpass.kumi.systems/api/interpreter', 'https://maps.mail.ru/osm/tools/overpass/api/interpreter'];
-const CACHE_KEY = 'thazi-osm-cache-v1';
+const CACHE_KEY = 'thazi-osm-cache-v2';
+const CACHE_META = 'thazi-osm-cache-meta-v2';
+const CACHE_TTL = 24 * 60 * 60 * 1000;
+const BUNDLE_URL = () => new URL('thazi.osm.json', typeof document !== 'undefined' ? document.baseURI : 'http://localhost/').href;
 
 export const RW = { motorway: 12, trunk: 11, primary: 10, secondary: 8, tertiary: 7, unclassified: 5.5, residential: 5.5, living_street: 4.5, service: 4, track: 3.5, road: 5, footway: 1.6, path: 1.6, pedestrian: 3, cycleway: 2, steps: 1.6, bridleway: 2 };
 export const MAJOR = new Set(['motorway', 'trunk', 'primary', 'secondary', 'tertiary']);
 export const DRIVE = new Set(['motorway', 'trunk', 'primary', 'secondary', 'tertiary', 'unclassified', 'residential', 'living_street', 'service', 'road']);
 export const BRICKS = ['#b4624a', '#a85740', '#c07658', '#9d5742', '#b06a4e', '#8f5440'];
-export const WALLS = ['#f4e4c8', '#f2c9b8', '#cfe3d4', '#c9dbe9', '#f6dfa0', '#e8d2e6', '#fbf6ec', '#e9c9a3', '#d7e7c0'];
+// Warm Myanmar-town pastels: cream, peach, mint, sky, wash-yellow, lilac, clay, sage.
+export const WALLS = ['#f4e4c8', '#f2c9b8', '#cfe3d4', '#c9dbe9', '#f6dfa0', '#e8d2e6', '#fbf6ec', '#e9c9a3', '#d7e7c0', '#f0d5c0', '#dce8f0', '#efe6c8', '#e8cfc0', '#f5ebe0', '#e6f0e4', '#f0e0d0', '#dde6f2', '#f8e8c8'];
 export const ROOFS = ['#c4573a', '#8aa0b4', '#b84a3c', '#6f8fa6', '#d98a4b', '#9aa5ad', '#a8553f'];
 export const CAR_COLS = ['#e94f37', '#3b8ea5', '#f5b700', '#ffffff', '#5c6b73', '#2e86ab', '#7bb661', '#f18f01'];
 export const ITEMS = ['မုန့်ဟင်းခါး', 'လက်ဖက်ရည်', 'ထန်းလျက်', 'ပဲပြုတ်', 'စာအိတ်', 'ဆေးဘူး', 'ထမင်းချိုင့်', 'ပန်းခြင်း'];
@@ -60,25 +64,76 @@ export function normalize(j) {
   }).filter(Boolean) };
 }
 
-export async function fetchOSM(msg) {
-  try { const c = localStorage.getItem(CACHE_KEY); if (c) return JSON.parse(c); } catch (e) {}
+function readCache() {
+  try {
+    const meta = JSON.parse(localStorage.getItem(CACHE_META) || 'null');
+    const c = localStorage.getItem(CACHE_KEY);
+    if (!c) return null;
+    const data = JSON.parse(c);
+    if (!data || !data.elements || !data.elements.length) return null;
+    const age = meta && typeof meta.t === 'number' ? Date.now() - meta.t : Infinity;
+    return { data, fresh: age < CACHE_TTL };
+  } catch (e) { return null; }
+}
+
+function writeCache(data) {
+  try {
+    localStorage.setItem(CACHE_KEY, JSON.stringify(data));
+    localStorage.setItem(CACHE_META, JSON.stringify({ t: Date.now() }));
+  } catch (e) {}
+}
+
+async function fetchOverpass(msg) {
   const bb = `${BB.s},${BB.w},${BB.n},${BB.e}`;
   const q = `[out:json][timeout:90];(way["building"](${bb});way["highway"](${bb});way["railway"](${bb});way["waterway"](${bb});way["natural"](${bb});way["landuse"](${bb});way["leisure"](${bb});way["amenity"](${bb});node["name"](${bb});node["railway"="station"](${bb}););out geom;`;
   for (let i = 0; i < ENDPOINTS.length; i++) {
     try {
-      msg(`OpenStreetMap မှ သာစည်မြေပုံ ရယူနေသည်… (${my(i + 1)}/${my(ENDPOINTS.length)})`, 0.1 + i * 0.07);
+      if (msg) msg(`OpenStreetMap မှ သာစည်မြေပုံ ရယူနေသည်… (${my(i + 1)}/${my(ENDPOINTS.length)})`, 0.1 + i * 0.07);
       const ctl = new AbortController(); const to = setTimeout(() => ctl.abort(), 45000);
       const r = await fetch(ENDPOINTS[i], { method: 'POST', body: 'data=' + encodeURIComponent(q), headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, signal: ctl.signal });
       clearTimeout(to);
       if (!r.ok) continue;
       const j = await r.json();
       if (!j.elements || !j.elements.length) continue;
-      msg('မြေပုံကို ဖတ်နေသည်…', 0.4);
-      const n = normalize(j);
-      try { localStorage.setItem(CACHE_KEY, JSON.stringify(n)); } catch (e) {}
-      return n;
+      return normalize(j);
     } catch (e) {}
   }
+  return null;
+}
+
+function refreshOSMBackground() {
+  // Fire-and-forget: keep the next visit warm without blocking this load.
+  fetchOverpass(null).then(n => { if (n) writeCache(n); }).catch(() => {});
+}
+
+export async function fetchOSM(msg) {
+  const cached = readCache();
+  if (cached && cached.fresh) return cached.data;
+
+  // Bundled snapshot so first open (and Overpass outages) do not block on the network.
+  let bundled = null;
+  try {
+    msg('မြေပုံဖိုင် ဖွင့်နေသည်…', 0.12);
+    const r = await fetch(BUNDLE_URL(), { cache: 'force-cache' });
+    if (r.ok) {
+      const j = await r.json();
+      // public/thazi.osm.json is already normalize()-d; raw Overpass still works if swapped in.
+      if (j && j.elements && j.elements.length) bundled = j.elements[0] && (j.elements[0].pts || j.elements[0].lat != null) ? j : normalize(j);
+    }
+  } catch (e) {}
+
+  if (bundled) {
+    refreshOSMBackground();
+    return bundled;
+  }
+  if (cached) {
+    refreshOSMBackground();
+    return cached.data;
+  }
+
+  msg('မြေပုံကို ဖတ်နေသည်…', 0.2);
+  const n = await fetchOverpass(msg);
+  if (n) { writeCache(n); return n; }
   return null;
 }
 

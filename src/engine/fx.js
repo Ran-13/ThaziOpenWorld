@@ -9,12 +9,13 @@ export function makeComposer(renderer, scene, camera, samples = 0) {
   if (!samples) rt.depthTexture = new THREE.DepthTexture(Math.max(1, sz.x), Math.max(1, sz.y), THREE.UnsignedIntType);
   const comp = new EffectComposer(renderer, rt);
   comp.addPass(new RenderPass(scene, camera));
-  const bloom = new UnrealBloomPass(new THREE.Vector2(512, 512), 0.25, 0.6, 0.92); comp.addPass(bloom);
+  const bloom = new UnrealBloomPass(new THREE.Vector2(512, 512), 0.18, 0.5, 1.1); comp.addPass(bloom);
   const ht = new ShaderPass(HorizontalTiltShiftShader), vt = new ShaderPass(VerticalTiltShiftShader);
   comp.addPass(ht); comp.addPass(vt);
   comp.addPass(new OutputPass());
-  let blur = 3.2;
-  const apply = () => { const pr = renderer.getPixelRatio(), w = comp._w || 1, h = comp._h || 1; ht.uniforms.h.value = blur / (w * pr); vt.uniforms.v.value = blur / (h * pr); ht.uniforms.r.value = vt.uniforms.r.value = 0.5; ht.enabled = vt.enabled = blur > 0; };
+  let blur = 2.4;
+  // Focus a bit below mid-frame — closer chase puts the bike lower in the view.
+  const apply = () => { const pr = renderer.getPixelRatio(), w = comp._w || 1, h = comp._h || 1; ht.uniforms.h.value = blur / (w * pr); vt.uniforms.v.value = blur / (h * pr); ht.uniforms.r.value = vt.uniforms.r.value = 0.58; ht.enabled = vt.enabled = blur > 0; };
   return {
     comp, bloom,
     setSize(w, h) { comp._w = w; comp._h = h; comp.setSize(w, h); bloom.setSize(w, h); apply(); },
@@ -28,12 +29,16 @@ export function makeSky(sunDisc = true) {
     uniforms: { top: { value: new THREE.Color() }, horizon: { value: new THREE.Color() }, sunDir: { value: new THREE.Vector3(0, 1, 0) }, sunCol: { value: new THREE.Color() } },
     vertexShader: `varying vec3 vD; void main(){ vD = normalize(position); vec4 p = projectionMatrix * modelViewMatrix * vec4(position, 1.0); gl_Position = p.xyww; }`,
     fragmentShader: `uniform vec3 top; uniform vec3 horizon; uniform vec3 sunDir; uniform vec3 sunCol; varying vec3 vD;
-      void main(){ vec3 d = normalize(vD); float h = clamp(d.y, 0.0, 1.0); vec3 c = mix(horizon, top, pow(h, 0.55));
+      void main(){ vec3 d = normalize(vD); float h = clamp(d.y, 0.0, 1.0);
+        // Soft horizon haze band so the sky isn't a flat 2-stop blend.
+        float haze = exp(-h * 4.5) * 0.35;
+        vec3 c = mix(horizon, top, pow(h, 0.48));
+        c = mix(c, horizon * 1.08 + vec3(0.08, 0.05, 0.02), haze);
         float s = max(dot(d, normalize(sunDir)), 0.0);
         #ifdef SUN_DISC
-          c += sunCol * (pow(s, 900.0) * 6.0 + pow(s, 10.0) * 0.3);
+          c += sunCol * (pow(s, 700.0) * 7.5 + pow(s, 8.0) * 0.45 + pow(s, 2.0) * 0.08);
         #else
-          c += sunCol * (s * s * s * s * 0.35);   // the sky fills the screen; skip pow() on phones
+          c += sunCol * (s * s * s * s * 0.4);
         #endif
         gl_FragColor = vec4(c, 1.0);
         #include <tonemapping_fragment>

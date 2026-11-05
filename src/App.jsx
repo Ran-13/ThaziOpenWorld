@@ -5,7 +5,13 @@ const my = s => String(s).replace(/[0-9]/g, d => '၀၁၂၃၄၅၆၇၈၉
 const card = { background: '#fff8ec', borderRadius: 16, boxShadow: '0 4px 0 rgba(43,42,51,.18)' };
 const btn = { border: 'none', fontFamily: 'inherit', fontWeight: 700, cursor: 'pointer' };
 
-const OPTIONS = { realClock: true, dayMinutes: 8, startHour: 16, traffic: 'Normal', quality: 'Best', ground: 'Stylized' };
+const isMobile = typeof matchMedia !== 'undefined' && matchMedia('(pointer: coarse)').matches;
+const OPTIONS = {
+  realClock: true, dayMinutes: 8, startHour: 16,
+  traffic: isMobile ? 'Quiet' : 'Normal',
+  quality: isMobile ? 'Fast' : 'Best',
+  ground: 'Stylized',
+};
 
 export default function App() {
   const stage = useRef(null), map = useRef(null), joy = useRef(null), knob = useRef(null), game = useRef(null);
@@ -18,7 +24,7 @@ export default function App() {
   // Force landscape. screen.orientation.lock() works on Android/Chrome (and only in fullscreen);
   // iOS Safari has no lock at all, so fall back to rotating the whole app 90 degrees.
   useEffect(() => {
-    if (typeof matchMedia === 'undefined' || !matchMedia('(pointer: coarse)').matches) return;
+    if (!isMobile) return;
     let locked = false;
     try {
       const r = screen.orientation && screen.orientation.lock && screen.orientation.lock('landscape');

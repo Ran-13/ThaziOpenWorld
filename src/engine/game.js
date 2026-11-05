@@ -1,5 +1,4 @@
 import * as THREE from './three.js';
-import { RoomEnvironment } from './addons.js';
 import * as O from './osm.js';
 import { makeTextures } from './textures.js';
 import { std, tube, bake, makeBike, makePagoda, makePagodaMats, makeStation, makeTrainCar, makeVehicle, vehicleLights, makePerson, palmGeometries, roundTreeGeometries, bushGeometry } from './models.js';
@@ -9,8 +8,12 @@ import { makeComposer, makeSky, makeWaterMaterial, makeMotes, makePuffs } from '
 const { BB, px, pz, HW, HH, BX, BZ, MR, UP, my, rnd, pick, mpick, col, MAJOR, DRIVE, WALLS, BRICKS, CAR_COLS, ITEMS, pip, area, centroid, segDist, clipSeg, Grid, Builder, bhash, h01 } = O;
 export { my };
 const UNPAVED = /unpaved|dirt|ground|gravel|sand|earth|compacted/;
-const TIN = ['#d6dadd', '#c9ccd0', '#b98d6a', '#a85a44', '#6f8fa6', '#7f9a7a', '#e0e2e4', '#c08a5a'];
-const WOODS = ['#e2c09a', '#d4ab82', '#c79a6e', '#e8cfae'];
+const TIN = ['#d6dadd', '#c9ccd0', '#b98d6a', '#a85a44', '#6f8fa6', '#7f9a7a', '#e0e2e4', '#c08a5a', '#8a9e7a', '#c4a882', '#9aabb8', '#d4b896'];
+const WOODS = ['#e2c09a', '#d4ab82', '#c79a6e', '#e8cfae', '#c9a06e', '#b8895c', '#d8b890'];
+const AWNINGS = ['#c4573a', '#2f8f83', '#d9a441', '#3b6ea5', '#7a3b6e', '#e8e4d8', '#5b7a3a', '#c47a3a'];
+const FASCIA = ['#5a3d2b', '#6b4630', '#4a3428', '#7a5240'];
+const PLINTH = ['#d8d0c4', '#cfc6b8', '#e2d9cc', '#c4bbae'];
+const pickH = (arr, h, k) => arr[Math.floor(h01(h, k) * arr.length) % arr.length];
 
 async function loadSatellite(msg, small) {
   const z = small ? 17 : 18, n = 2 ** z, BLK = 4;
@@ -63,21 +66,22 @@ export async function createGame(o) {
   const nowHour = () => { const d = new Date(); return d.getHours() + d.getMinutes() / 60 + d.getSeconds() / 3600; };
   const best = opts.quality !== 'Fast';
   const mobile = typeof matchMedia !== 'undefined' && matchMedia('(pointer: coarse)').matches;
-  // A sharp frame beats a blurred, bloomed one on a phone: skip post-processing there and put
-  // the budget into pixel ratio instead. (The tilt-shift pass is literally a blur.)
+  // Phones skip post (tilt-shift is a blur). Cap below native DPR 3, but keep enough pixels
+  // that façades stay crisp — adaptive DPR can still drop if the frame budget slips.
   const post = best && !mobile;
-  // A laptop at DPR 2 capped to 2 renders at its native resolution. A phone at DPR 3 capped to 2
-  // renders only 44% of its native pixels and the browser upscales the rest - that is the blur.
-  // With post-processing off on phones there is budget to render native; the adaptive loop
-  // below backs the ratio off if the device cannot hold it.
-  const MAXPR = Math.min(window.devicePixelRatio || 1, best ? (post ? 2 : 3) : 1.25);
+  const MAXPR = Math.min(window.devicePixelRatio || 1, mobile ? 1.75 : best ? (post ? 2 : 3) : 1.25);
   let pr = MAXPR;
+  const yieldToPaint = () => new Promise(r => setTimeout(r, 0));
   let prog = 0;
   const msg = (m, p) => { if (p != null) prog = p; hud({ loading: true, loadMsg: m, progress: prog }); };
+  // Phones skip heavy GLBs. Desktop keeps Kenney city shop kits for street fronts.
+  const assetOpts = mobile
+    ? { skip: ['houses', 'palm', 'tree', 'person'], oneVariant: true }
+    : {};
 
   msg('စတင်နေသည်…', 0.03);
   msg('စတင်နေသည်…', 0.08);
-  const [data0, assets] = await Promise.all([O.fetchOSM(msg), loadAssets(modelsBase, msg)]);
+  const [data0, assets] = await Promise.all([O.fetchOSM(msg), loadAssets(modelsBase, msg, assetOpts)]);
   let data = data0; if (!data) { msg('အင်တာနက် မရပါ — နမူနာမြို့ကို တည်ဆောက်နေသည်…', 0.45); data = O.fallbackData(); }
   try { if (document.fonts && document.fonts.ready) await document.fonts.ready; } catch (e) {}
   msg('မြို့ကို တည်ဆောက်နေသည်…', 0.5);
@@ -90,18 +94,39 @@ export async function createGame(o) {
   const satRoof = (x, z) => { if (!sat) return null; const d = sat.sample, u = (x - sat.wx0) / (sat.wx1 - sat.wx0), v = (z - sat.wz0) / (sat.wz1 - sat.wz0); const ix = Math.floor(u * d.width), iy = Math.floor(v * d.height); if (ix < 0 || iy < 0 || ix >= d.width || iy >= d.height) return null; const i = (iy * d.width + ix) * 4, r = d.data[i], gg = d.data[i + 1], b = d.data[i + 2]; if (gg > r * 1.06 && gg > b) return null; const c = new THREE.Color().setRGB(r / 255, gg / 255, b / 255, THREE.SRGBColorSpace); return c.lerp(new THREE.Color(1, 1, 1), 0.18); };
 
   // ---------- renderer / scene ----------
+  // Light MSAA on phones: with no post path this is cheap edge cleanup vs a soft upscale.
   const renderer = new THREE.WebGLRenderer({ antialias: !post, powerPreference: 'high-performance' });
   renderer.setPixelRatio(pr);
-  renderer.shadowMap.enabled = !mobile; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-  renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 0.92;
+  renderer.shadowMap.enabled = best && !mobile; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = best ? 1.08 : mobile ? 1.05 : 0.98;
+  // Keep wall/road atlases crisp when the chase cam is close on a phone.
+  const maxAniso = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+  Object.values(TX).forEach(t => { if (t && t.isTexture) t.anisotropy = Math.max(t.anisotropy || 1, maxAniso); });
   container.appendChild(renderer.domElement);
   Object.assign(renderer.domElement.style, { position: 'absolute', inset: '0', width: '100%', height: '100%', display: 'block', touchAction: 'none' });
   const scene = new THREE.Scene();
   const pmrem = new THREE.PMREMGenerator(renderer);
-  if (!mobile) scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
-  const camera = new THREE.PerspectiveCamera(46, 1, 1.0, mobile ? 520 : 1400);
-  scene.fog = new THREE.Fog(0xbfe4f5, mobile ? 120 : 320, mobile ? 480 : 1250);
+  // Outdoor gradient env (not RoomEnvironment) so tin roofs and vehicle paint pick up sky/ground color.
+  if (!mobile) {
+    const envSc = new THREE.Scene();
+    const envMat = new THREE.ShaderMaterial({
+      side: THREE.BackSide,
+      uniforms: { top: { value: new THREE.Color('#5fa8e0') }, hor: { value: new THREE.Color('#d7eef8') }, gnd: { value: new THREE.Color('#b89562') } },
+      vertexShader: 'varying vec3 vP; void main(){ vP = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }',
+      fragmentShader: 'varying vec3 vP; uniform vec3 top, hor, gnd; void main(){ float y = normalize(vP).y; vec3 c = y > 0.0 ? mix(hor, top, pow(clamp(y,0.0,1.0), 0.42)) : mix(hor, gnd, pow(clamp(-y,0.0,1.0), 0.3)); gl_FragColor = vec4(c, 1.0); }',
+    });
+    envSc.add(new THREE.Mesh(new THREE.SphereGeometry(1, 48, 24), envMat));
+    scene.environment = pmrem.fromScene(envSc, 0.02).texture;
+    envMat.dispose(); envSc.children[0].geometry.dispose();
+  }
+  pmrem.dispose();
+  const camera = new THREE.PerspectiveCamera(best ? 42 : mobile ? 44 : 48, 1, 0.6, mobile ? 520 : 1400);
+  // Softer/farther fog on phones so mid-street houses stay readable instead of milky.
+  scene.fog = new THREE.Fog(0xbfe4f5, mobile ? 140 : 200, mobile ? 520 : 980);
   const CHUNK = 160, ck = (x, z) => Math.floor(x / CHUNK) + ',' + Math.floor(z / CHUNK);
+  const cullMeshes = [];
+  const trackChunk = (me, ix, iz) => { cullMeshes.push({ me, ix, iz }); };
+  const CULL_R = mobile ? 2 : 6;
   class ChunkB {
     constructor(us) { this.m = new Map(); this.us = us; }
     at(x, z) { const k = ck(x, z); let b = this.m.get(k); if (!b) { b = new Builder(); if (this.us) b.us = this.us; this.m.set(k, b); } return b; }
@@ -110,14 +135,22 @@ export async function createGame(o) {
     disc(x, z, r, y, c) { this.at(x, z).disc(x, z, r, y, c, 14); }
     segUV(ax, az, bx, bz, w, y, c, v0, v1) { this.at((ax + bx) / 2, (az + bz) / 2).segUV(ax, az, bx, bz, w, y, c, v0, v1); }
     quadUV(aL, bL, bR, aR, y, c, v0, v1) { const cx = (aL[0] + bL[0] + bR[0] + aR[0]) / 4, cz = (aL[1] + bL[1] + bR[1] + aR[1]) / 4; this.at(cx, cz).quad([aL[0], y, aL[1]], [bL[0], y, bL[1]], [bR[0], y, bR[1]], [aR[0], y, aR[1]], c, UP, [0, v0], [0, v1], [1, v1], [1, v0]); }
-    meshes(mat, cast, recv, order) { for (const b of this.m.values()) if (!b.empty) { const me = b.mesh(mat); me.castShadow = cast; me.receiveShadow = recv; if (order) me.renderOrder = order; scene.add(me); } }
+    meshes(mat, cast, recv, order) {
+      for (const [k, b] of this.m) if (!b.empty) {
+        const me = b.mesh(mat); me.castShadow = cast; me.receiveShadow = recv; if (order) me.renderOrder = order;
+        scene.add(me); const p = k.split(','); trackChunk(me, +p[0], +p[1]);
+      }
+    }
   }
   const sky = makeSky(!mobile); scene.add(sky);
-  const hemi = new THREE.HemisphereLight(0xdff2ff, 0xc9b48a, mobile ? 1.35 : 0.8); scene.add(hemi);
-  const sun = new THREE.DirectionalLight(0xffffff, 2.2); sun.castShadow = true;
+  const hemi = new THREE.HemisphereLight(0xe8f4ff, 0xc9a878, mobile ? 1.55 : 0.95); scene.add(hemi);
+  const sun = new THREE.DirectionalLight(0xfff1d6, mobile ? 1.6 : 2.55); sun.castShadow = best && !mobile;
   const SH = best && !mobile ? 2048 : 1024, SR = 50;
   sun.shadow.mapSize.set(SH, SH); Object.assign(sun.shadow.camera, { left: -SR, right: SR, top: SR, bottom: -SR, near: 1, far: 420 });
-  sun.shadow.bias = -0.0005; sun.shadow.normalBias = 0.35; sun.shadow.radius = 3;
+  sun.shadow.bias = -0.0004; sun.shadow.normalBias = 0.28; sun.shadow.radius = 2.2;
+  // Soft fill on desktop only — phones already boost hemi and skip the second light.
+  const fill = mobile ? null : new THREE.DirectionalLight(0xb8d4f0, 0.35);
+  if (fill) scene.add(fill, fill.target);
   scene.add(sun, sun.target);
 
   // ---------- spatial indices ----------
@@ -184,8 +217,9 @@ export async function createGame(o) {
     msg('အိမ်ခြေများ ဖြည့်စွက်နေသည်…', 0.68);
     const FILL = new Set(['residential', 'unclassified', 'tertiary', 'secondary', 'primary', 'living_street', 'service', 'road', 'track']);
     let added = 0;
+    const FILL_CAP = mobile ? 800 : 2600;
     for (const s of roadSegs) {
-      if (added > 2600) break;
+      if (added > FILL_CAP) break;
       const r = s[6]; if (!FILL.has(r.type)) continue;
       const dx = s[2] - s[0], dz = s[3] - s[1], L = Math.hypot(dx, dz); if (L < 14) continue;
       const fx = dx / L, fz = dz / L, nx = -fz, nz = fx, dens = r.type === 'track' ? 0.35 : 0.72;
@@ -254,14 +288,21 @@ export async function createGame(o) {
     }
   }
   const sleepers = [], balC = col('#a99a88'), railC = col('#6b7078');
+  const SLEEPER_CAP = mobile ? 600 : 16000, SLEEPER_STEP = mobile ? 3.2 : 1.0;
   for (const c of railSegs) {
     G.seg(c[0], c[1], c[2], c[3], 3.2, 0.13, balC); G.disc(c[2], c[3], 1.6, 0.13, balC);
     const dx = c[2] - c[0], dz = c[3] - c[1], L = Math.hypot(dx, dz); if (L < 0.1) continue;
     const nx = -dz / L, nz = dx / L;
     for (const o of [-0.72, 0.72]) G.seg(c[0] + nx * o, c[1] + nz * o, c[2] + nx * o, c[3] + nz * o, 0.14, 0.2, railC);
-    for (let d = 0; d < L && sleepers.length < 16000; d += 1.0) sleepers.push([c[0] + dx * d / L, 0.15, c[1] + dz * d / L, Math.atan2(dx, dz)]);
+    for (let d = 0; d < L && sleepers.length < SLEEPER_CAP; d += SLEEPER_STEP) sleepers.push([c[0] + dx * d / L, 0.15, c[1] + dz * d / L, Math.atan2(dx, dz)]);
   }
-  const groundMat = new THREE.MeshStandardMaterial({ vertexColors: true, map: TX.ground, roughness: 0.95 });
+  // Lambert on phones: no PBR lighting math over thousands of wall/road fragments.
+  const matCol = (color, o = {}) => mobile
+    ? new THREE.MeshLambertMaterial({ color, map: o.map || null, vertexColors: !!o.vertexColors, side: o.side || THREE.FrontSide, flatShading: !!o.flatShading })
+    : std(color, o);
+  const groundMat = mobile
+    ? new THREE.MeshLambertMaterial({ vertexColors: true, map: TX.ground })
+    : new THREE.MeshStandardMaterial({ vertexColors: true, map: TX.ground, roughness: 0.92, metalness: 0.02 });
   G.meshes(groundMat, false, true);
   if (sat) {
     for (const b of sat.blocks) {
@@ -273,7 +314,9 @@ export async function createGame(o) {
       const sm = new THREE.Mesh(pg, new THREE.MeshStandardMaterial({ map: tex, roughness: 1 })); sm.position.y = 0.02; sm.receiveShadow = true; scene.add(sm);
     }
   }
-  const roadMat = map => new THREE.MeshStandardMaterial({ map, vertexColors: true, roughness: 0.88, metalness: 0 });
+  const roadMat = map => mobile
+    ? new THREE.MeshLambertMaterial({ map, vertexColors: true })
+    : new THREE.MeshStandardMaterial({ map, vertexColors: true, roughness: 0.78, metalness: 0.04 });
   RD.major.meshes(roadMat(TX.asphaltMajor), false, true); RD.plain.meshes(roadMat(TX.asphaltPlain), false, true); RD.dirt.meshes(roadMat(TX.dirtRoad), false, true);
   JN.major.meshes(roadMat(TX.asphaltJointMajor), false, true); JN.plain.meshes(roadMat(TX.asphaltJointPlain), false, true); JN.dirt.meshes(roadMat(TX.dirtJoint), false, true);
   const waterMat = makeWaterMaterial();
@@ -281,78 +324,139 @@ export async function createGame(o) {
     for (const w of W.waters) WB.poly(w, 0.045, wc);
     for (const w of W.waterLines) for (let i = 0; i < w.pts.length - 1; i++) { const c = clipSeg(w.pts[i][0], w.pts[i][1], w.pts[i + 1][0], w.pts[i + 1][1]); if (c) { WB.seg(c[0], c[1], c[2], c[3], w.w, 0.045, wc); WB.disc(c[2], c[3], w.w / 2, 0.045, wc); } }
     WB.meshes(waterMat, false, false, 1); }
-  const byChunk = (list, ix, iz) => { const mp = new Map(); for (const w of list) { const k = ck(w[ix], w[iz]); if (!mp.has(k)) mp.set(k, []); mp.get(k).push(w); } return [...mp.values()]; };
-  const mkInst = (list, geo, mat, y0 = 0, shadow = false, colorFn = null) => { if (!list.length) return null; const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler(), v = new THREE.Vector3(), s1 = new THREE.Vector3(1, 1, 1), s2 = new THREE.Vector3(); for (const part of byChunk(list, 0, 2)) { const im = new THREE.InstancedMesh(geo, mat, part.length); part.forEach((w, i) => { q.setFromEuler(e.set(0, w[3], 0)); m4.compose(v.set(w[0], w[1] + y0, w[2]), q, w[4] ? s2.set(1, w[4], 1) : s1); im.setMatrixAt(i, m4); if (colorFn) im.setColorAt(i, colorFn(w)); }); im.computeBoundingSphere(); im.castShadow = shadow; im.receiveShadow = true; scene.add(im); } };
-  mkInst(sleepers, new THREE.BoxGeometry(2.3, 0.1, 0.26), std(0x5e4636, { roughness: 0.9 }));
+  const byChunk = (list, ix, iz) => { const mp = new Map(); for (const w of list) { const k = ck(w[ix], w[iz]); if (!mp.has(k)) mp.set(k, []); mp.get(k).push(w); } return mp; };
+  const mkInst = (list, geo, mat, y0 = 0, shadow = false, colorFn = null) => {
+    if (!list.length) return null;
+    const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler(), v = new THREE.Vector3(), s1 = new THREE.Vector3(1, 1, 1), s2 = new THREE.Vector3();
+    for (const [k, part] of byChunk(list, 0, 2)) {
+      const im = new THREE.InstancedMesh(geo, mat, part.length);
+      part.forEach((w, i) => { q.setFromEuler(e.set(0, w[3], 0)); m4.compose(v.set(w[0], w[1] + y0, w[2]), q, w[4] ? s2.set(1, w[4], 1) : s1); im.setMatrixAt(i, m4); if (colorFn) im.setColorAt(i, colorFn(w)); });
+      im.computeBoundingSphere(); im.castShadow = shadow; im.receiveShadow = true; scene.add(im);
+      const p = k.split(','); trackChunk(im, +p[0], +p[1]);
+    }
+  };
+  mkInst(sleepers, new THREE.BoxGeometry(2.3, 0.1, 0.26), matCol(0x5e4636, { roughness: 0.9 }));
   const boardMats = [0, 1, 2, 3, 4, 5].map(i => i === 2 ? new THREE.MeshStandardMaterial({ color: 0xb4c98a, map: TX.ground, roughness: 1 }) : new THREE.MeshStandardMaterial({ color: 0x8c5e3a, map: TX.wood, roughness: 0.7 }));
   const board = new THREE.Mesh(new THREE.BoxGeometry(BX * 2 + 6, 8, BZ * 2 + 6), boardMats); board.position.y = sat ? -4.08 : -4.001; board.receiveShadow = true; scene.add(board);
   const plinth = new THREE.Mesh(new THREE.BoxGeometry(BX * 2 + 40, 3, BZ * 2 + 40), std(0x4e3522, { map: TX.wood, roughness: 0.6 })); plinth.position.y = -9.5; scene.add(plinth);
 
   // ---------- buildings ----------
+  // Urban city look: plaster/brick façades, mostly flat roofs, compound fences (ခြံစည်းရိုး).
+  // Kenney shop GLBs only on well-proportioned major-road lots.
   msg('အဆောက်အအုံများ ဆောက်နေသည်…', 0.78);
-  await new Promise(r => setTimeout(r, 16));
-  const WB = new ChunkB(), RFc = new ChunkB();
+  await yieldToPaint();
+  const WB = new ChunkB(), RFc = new ChunkB(), AW = new ChunkB(), PL = new ChunkB(), FN = new ChunkB();
   const TILE = { bamboo: 0, wood: 1, plaster: 2 };
-  const R_TIN = 0, R_CONC = 1, R_PLAIN = 2;   // cells of the roof atlas
-  const winLit = [], winDark = [], frames = [], doors = [], posts = [];
+  const R_TIN = 0, R_CONC = 1, R_PLAIN = 2;
+  const winLit = [], winDark = [], frames = [], doors = [], posts = [], pillars = [];
+  const WIN_CAP = mobile ? 5000 : 16000;
+  const FENCE_CAP = mobile ? 900 : 2200;
+  let fenceN = 0;
   const houseA = assets.houses || [], houseLists = houseA.map(() => []);
-  const cAt = (pts) => centroid(pts);
+  const CITY_WALLS = ['#f2efe8', '#ebe6dc', '#e8e0d4', '#f5f0e6', '#ddd8ce', '#e4ebe8', '#f0e8e0', '#e8ecf0', '#f7f3ea'];
+  const FENCE_COLS = ['#e8e4dc', '#ddd8d0', '#f0ece4', '#d4cfc6', '#ebe6de', '#cfc9c0'];
+  const outset = (ring, oh) => {
+    const [ox, oz] = centroid(ring);
+    return ring.map(([x, z]) => { const dx = x - ox, dz = z - oz, L = Math.hypot(dx, dz) || 1; return [x + dx / L * oh, z + dz / L * oh]; });
+  };
+  const addCompoundFence = (pts, cx, cz, hb, doorEdge) => {
+    if (fenceN >= FENCE_CAP || h01(hb, 16) >= (mobile ? 0.7 : 0.85)) return;
+    fenceN++;
+    const yard = 1.4 + h01(hb, 17) * 1.6;
+    const ring = outset(pts, yard);
+    const fh = 1.35 + h01(hb, 18) * 0.45;
+    const fc = col(pickH(FENCE_COLS, hb, 19));
+    const gateW = 2.2;
+    const F = FN.at(cx, cz); F.tile = R_CONC;
+    for (let i = 0; i < ring.length; i++) {
+      const a = ring[i], c = ring[(i + 1) % ring.length];
+      const dx = c[0] - a[0], dz = c[1] - a[1], L = Math.hypot(dx, dz); if (L < 0.3) continue;
+      let nx = dz / L, nz = -dx / L;
+      if (pip((a[0] + c[0]) / 2 + nx * 0.1, (a[1] + c[1]) / 2 + nz * 0.1, ring)) { nx = -nx; nz = -nz; }
+      const isGateEdge = i === doorEdge || (doorEdge < 0 && i === 0);
+      if (isGateEdge && L > gateW + 1.2) {
+        const mid = 0.5, half = (gateW * 0.5) / L;
+        const t0 = mid - half, t1 = mid + half;
+        const p1 = [a[0] + dx * t0, a[1] + dz * t0], p2 = [a[0] + dx * t1, a[1] + dz * t1];
+        const wallSeg = (q0, q1) => {
+          const ll = Math.hypot(q1[0] - q0[0], q1[1] - q0[1]); if (ll < 0.15) return;
+          F.quad([q0[0], 0, q0[1]], [q1[0], 0, q1[1]], [q1[0], fh, q1[1]], [q0[0], fh, q0[1]], fc, [nx, 0, nz]);
+        };
+        wallSeg([a[0], a[1]], p1); wallSeg(p2, [c[0], c[1]]);
+        pillars.push([p1[0], 0, p1[1], 0, fh + 0.25]);
+        pillars.push([p2[0], 0, p2[1], 0, fh + 0.25]);
+      } else {
+        F.quad([a[0], 0, a[1]], [c[0], 0, c[1]], [c[0], fh, c[1]], [a[0], fh, a[1]], fc, [nx, 0, nz]);
+      }
+      pillars.push([a[0], 0, a[1], 0, fh + 0.15]);
+    }
+  };
+  let bDone = 0;
   for (const b of W.buildings) {
     const pts = b.pts; if (pts.length < 3) continue;
     const ar = area(pts); if (ar < 6) continue;
-    const t = b.tags, [cx, cz] = cAt(pts);
-    const ns = houseA.length && pts.length === 4 && ar < 260 ? nearSeg(cx, cz) : null;
-    if (ns && ns[1] && ns[0] < 9 && MAJOR.has(ns[1][6].type)) {
-      const [p0, p1, p2] = pts, e0 = Math.hypot(p1[0] - p0[0], p1[1] - p0[1]), e1 = Math.hypot(p2[0] - p1[0], p2[1] - p1[1]);
-      const ua = e0 >= e1 ? [p1[0] - p0[0], p1[1] - p0[1]] : [p2[0] - p1[0], p2[1] - p1[1]], lu = Math.max(e0, e1), lv = Math.min(e0, e1);
-      const ux = ua[0] / lu, uz = ua[1] / lu; let th = Math.atan2(-uz, ux);
-      const fz = [Math.sin(th), Math.cos(th)]; if (roadClear(cx + fz[0] * 6, cz + fz[1] * 6) > roadClear(cx - fz[0] * 6, cz - fz[1] * 6)) th += Math.PI;
-      const k = Math.floor(rnd() * houseA.length), sz = houseA[k].size;
-      const sx = lu / Math.max(sz.x, 0.1), szz = lv / Math.max(sz.z, 0.1), jit = 0.98 + rnd() * 0.04;
-      // Stretching the model to fill the plot skewed it on every lot. Only take the GLB when the
-      // plot matches the model's proportions; then scale uniformly and leave the rest of the lot
-      // empty. Otherwise fall through and build the shop procedurally.
-      if (Math.max(sx, szz) / Math.max(1e-3, Math.min(sx, szz)) < 1.35) {
-        const su = Math.min(sx, szz) * jit;
-        houseLists[k].push([cx, cz, th, su, su, su]); continue;
-      }
-    }
-    // The OSM data here is tag-less (6,347 of 6,351 are a bare building=yes), so the house
-    // type has to be inferred from footprint size, shape and road context instead.
+    const t = b.tags, [cx, cz] = centroid(pts);
     const quad = pts.length === 4;
     let fLu = 0, fLv = 0;
     if (quad) { const q0 = Math.hypot(pts[1][0] - pts[0][0], pts[1][1] - pts[0][1]), q1 = Math.hypot(pts[2][0] - pts[1][0], pts[2][1] - pts[1][1]); fLu = Math.max(q0, q1); fLv = Math.min(q0, q1); }
     const asp = fLv > 0.5 ? fLu / fLv : 1;
-    const nr = ns || nearSeg(cx, cz);
+    const nr = houseA.length && quad && ar < 260 ? nearSeg(cx, cz) : nearSeg(cx, cz);
     const roadD = nr[1] ? nr[0] : 1e9, major = !!(nr[1] && MAJOR.has(nr[1][6].type)), drive = !!(nr[1] && DRIVE.has(nr[1][6].type));
     const hb = bhash(cx, cz);
-    const type = (ar >= 320 || (!quad && ar >= 180)) ? 'block'
-      : ar < 22 ? 'hut'
-      : (quad && asp >= 1.9 && drive && roadD < 16 && ar >= 42) ? 'shop'
-      : ar >= 150 ? 'hall'
-      : h01(hb, 0) < (ar >= 60 ? (major && roadD < 14 ? 0.50 : 0.40) : (major && roadD < 14 ? 0.34 : 0.24)) ? 'brick'
-      : h01(hb, 1) < (!drive || roadD > 16 ? 0.50 : 0.34) ? 'stilt'
-      : 'tin';
-    const lowRise = type === 'hut' || type === 'tin' || type === 'stilt' || type === 'brick';
-    const stilt = type === 'stilt', y0 = stilt ? 1.05 + h01(hb, 2) * 0.55 : 0;
-    const levels = type === 'shop' ? 2 : type === 'block' ? Math.min(8, parseInt(t['building:levels']) || (ar > 500 ? 3 : 2)) : 1;
-    const storeyH = type === 'hut' ? 2.3 : type === 'shop' ? 3.3 : type === 'hall' ? 4.0 : 2.9;
-    const h = parseFloat(t.height) || (y0 + levels * storeyH + (type === 'hut' ? 0.1 : 0.35));
-    const brickWall = type === 'brick' && h01(hb, 3) < 0.6;
-    const kind = (type === 'hut' || type === 'tin' || type === 'stilt') ? (h01(hb, 3) < 0.5 ? 'bamboo' : 'wood') : 'plaster';
-    const v = 0.9 + rnd() * 0.15;
-    const wc = brickWall ? col(pick(BRICKS)) : kind === 'plaster' ? col(pick(WALLS)) : kind === 'wood' ? col(pick(WOODS)) : new THREE.Color(v, v * 0.98, v * 0.95);
-    const roof = type === 'block' ? 'flat'
-      : type === 'hut' ? (h01(hb, 4) < 0.7 ? 'skillion' : 'gable')
-      : type === 'brick' ? (h01(hb, 4) < 0.55 ? 'hip' : h01(hb, 5) < 0.45 ? 'flat' : 'skillion')
-      : type === 'hall' ? (h01(hb, 4) < 0.8 ? 'hip' : 'gable')
-      : type === 'shop' ? (h01(hb, 4) < 0.6 ? 'gable' : 'skillion')
-      : type === 'tin' ? (h01(hb, 4) < 0.65 ? 'hip' : 'gable')
-      : (h01(hb, 4) < 0.7 ? 'gable' : 'hip');
-    const B = WB.at(cx, cz), RB = RFc.at(cx, cz), UB = RB, CB = RB;   // roofs share one builder, keyed by tile
+    // City shop kits on major-road lots that match the model proportions.
+    if (houseA.length && quad && ar < 260 && nr[1] && nr[0] < 9 && MAJOR.has(nr[1][6].type)) {
+      const [p0, p1, p2] = pts, e0 = Math.hypot(p1[0] - p0[0], p1[1] - p0[1]), e1 = Math.hypot(p2[0] - p1[0], p2[1] - p1[1]);
+      const ua = e0 >= e1 ? [p1[0] - p0[0], p1[1] - p0[1]] : [p2[0] - p1[0], p2[1] - p1[1]], lu = Math.max(e0, e1), lv = Math.min(e0, e1);
+      let th = Math.atan2(-ua[1] / lu, ua[0] / lu);
+      const fz = [Math.sin(th), Math.cos(th)]; if (roadClear(cx + fz[0] * 6, cz + fz[1] * 6) > roadClear(cx - fz[0] * 6, cz - fz[1] * 6)) th += Math.PI;
+      const k = Math.floor(h01(hb, 21) * houseA.length) % houseA.length, sz = houseA[k].size;
+      const sx = lu / Math.max(sz.x, 0.1), szz = lv / Math.max(sz.z, 0.1);
+      if (Math.max(sx, szz) / Math.max(1e-3, Math.min(sx, szz)) < 1.35) {
+        const su = Math.min(sx, szz) * (0.98 + h01(hb, 22) * 0.04);
+        houseLists[k].push([cx, cz, th, su, su, su]);
+        let doorEdge = -1, dmin = 1e9;
+        for (let i = 0; i < pts.length; i++) { const a = pts[i], c = pts[(i + 1) % pts.length]; if (Math.hypot(c[0] - a[0], c[1] - a[1]) < 2.4) continue; const d = roadClear((a[0] + c[0]) / 2, (a[1] + c[1]) / 2); if (d < dmin) { dmin = d; doorEdge = i; } }
+        addCompoundFence(pts, cx, cz, hb, doorEdge);
+        if ((++bDone & 127) === 0) await yieldToPaint();
+        continue;
+      }
+    }
+    // Urban mix: concrete blocks, brick townhouses, street shops — no stilts / bamboo huts.
+    const type = (ar >= 280 || (!quad && ar >= 160)) ? 'block'
+      : (quad && asp >= 1.55 && drive && roadD < 12 && ar >= 36) ? 'shop'
+      : ar >= 140 ? 'hall'
+      : h01(hb, 0) < 0.42 ? 'brick'
+      : 'house';
+    const lowRise = type === 'house' || type === 'brick';
+    const y0 = 0;
+    let levels = type === 'shop' ? 2
+      : type === 'block' ? Math.min(mobile ? 4 : 7, parseInt(t['building:levels']) || (ar > 400 ? 3 : 2))
+      : type === 'hall' ? (h01(hb, 2) < 0.35 ? 2 : 1)
+      : (major && roadD < 14 && h01(hb, 2) < 0.4 ? 2 : 1);
+    if (mobile && levels > 3) levels = 3;
+    const storeyH = type === 'shop' ? 3.3 : type === 'hall' ? 3.6 : type === 'block' ? 3.1 : 2.95;
+    const h = parseFloat(t.height) || (levels * storeyH + 0.35);
+    const brickWall = type === 'brick' || (type === 'house' && h01(hb, 3) < 0.25);
+    const kind = 'plaster';
+    const wc = brickWall ? col(pickH(BRICKS, hb, 9)) : col(pickH(CITY_WALLS, hb, 9));
+    // City roofs are mostly flat concrete; a few low skillions on shops/houses.
+    let roof = (type === 'block' || type === 'hall' || type === 'brick') ? 'flat'
+      : type === 'shop' ? (h01(hb, 4) < 0.55 ? 'flat' : 'skillion')
+      : (h01(hb, 4) < 0.72 ? 'flat' : 'skillion');
+    const B = WB.at(cx, cz), RB = RFc.at(cx, cz), UB = RB, CB = RB;
     B.tile = TILE[kind];
     let doorEdge = -1, dmin = 1e9;
     for (let i = 0; i < pts.length; i++) { const a = pts[i], c = pts[(i + 1) % pts.length]; if (Math.hypot(c[0] - a[0], c[1] - a[1]) < 2.4) continue; const d = roadClear((a[0] + c[0]) / 2, (a[1] + c[1]) / 2); if (d < dmin) { dmin = d; doorEdge = i; } }
+    // Concrete plinth / sidewalk strip at the base.
+    {
+      const pb = PL.at(cx, cz); pb.tile = R_CONC;
+      const pad = outset(pts, 0.15), pc = col(pickH(PLINTH, hb, 11));
+      pb.poly(pad, 0.06, pc); pb.poly(pts, 0.12, pc);
+      for (let i = 0; i < pts.length; i++) {
+        const a = pts[i], c = pts[(i + 1) % pts.length], pa = pad[i], pc2 = pad[(i + 1) % pad.length];
+        pb.quad([pa[0], 0, pa[1]], [pc2[0], 0, pc2[1]], [c[0], 0.12, c[1]], [a[0], 0.12, a[1]], pc, UP);
+      }
+    }
     let cum = 0;
     for (let i = 0; i < pts.length; i++) {
       const a = pts[i], c = pts[(i + 1) % pts.length];
@@ -360,113 +464,145 @@ export async function createGame(o) {
       let nx = dz / L, nz = -dx / L;
       if (pip((a[0] + c[0]) / 2 + nx * 0.15, (a[1] + c[1]) / 2 + nz * 0.15, pts)) { nx = -nx; nz = -nz; }
       const u0 = cum / 2, u1 = (cum + L) / 2; cum += L;
-      B.quad([a[0], y0, a[1]], [c[0], y0, c[1]], [c[0], h, c[1]], [a[0], h, a[1]], wc, [nx, 0, nz], [u0, y0 / 2], [u1, y0 / 2], [u1, h / 2], [u0, h / 2]);
+      const front = type === 'shop' && i === doorEdge;
+      const wallC = front ? wc.clone().multiplyScalar(0.82) : wc;
+      const baseY = 0.12;
+      const wallTop = front ? storeyH : h;
+      B.quad([a[0], baseY, a[1]], [c[0], baseY, c[1]], [c[0], wallTop, c[1]], [a[0], wallTop, a[1]], wallC, [nx, 0, nz], [u0, baseY / 2], [u1, baseY / 2], [u1, wallTop / 2], [u0, wallTop / 2]);
+      if (front && levels > 1) B.quad([a[0], wallTop, a[1]], [c[0], wallTop, c[1]], [c[0], h, c[1]], [a[0], h, a[1]], wc, [nx, 0, nz], [u0, wallTop / 2], [u1, wallTop / 2], [u1, h / 2], [u0, h / 2]);
+      // Floor band between storeys on 2+ level city buildings.
+      if (levels > 1 && !front) {
+        for (let f = 1; f < levels; f++) {
+          const by = f * storeyH;
+          B.quad([a[0] + nx * 0.03, by - 0.08, a[1] + nz * 0.03], [c[0] + nx * 0.03, by - 0.08, c[1] + nz * 0.03], [c[0] + nx * 0.03, by + 0.08, c[1] + nz * 0.03], [a[0] + nx * 0.03, by + 0.08, a[1] + nz * 0.03], col('#d8d0c4'), [nx, 0, nz], [0, 0], [1, 0], [1, 0.1], [0, 0.1]);
+        }
+      }
       const rot = Math.atan2(nx, nz);
-      if (stilt) { posts.push([a[0], 0, a[1], 0, y0]); if (L > 4) posts.push([(a[0] + c[0]) / 2, 0, (a[1] + c[1]) / 2, 0, y0]); }
-      if (i === doorEdge) doors.push([a[0] + dx * 0.5 + nx * 0.06, y0 + 1.05, a[1] + dz * 0.5 + nz * 0.06, rot]);
-      if (type !== 'hut' && L > 2.6 && winLit.length + winDark.length < 16000) {
-        let n = lowRise ? Math.floor(L / 3.0) : Math.floor((L - 0.8) / 2.6);
+      if (i === doorEdge) {
+        doors.push([a[0] + dx * 0.5 + nx * 0.06, baseY + 1.05, a[1] + dz * 0.5 + nz * 0.06, rot]);
+        if (type === 'shop' && L > 2.6) {
+          const ay = Math.min(h - 0.2, storeyH * 0.92);
+          const depth = 1.15, drop = 0.12, awC = col(pickH(AWNINGS, hb, 13));
+          AW.at(cx, cz).quad(
+            [a[0] + dx * 0.04 + nx * 0.04, ay, a[1] + dz * 0.04 + nz * 0.04],
+            [c[0] - dx * 0.04 + nx * 0.04, ay, c[1] - dz * 0.04 + nz * 0.04],
+            [c[0] - dx * 0.04 + nx * depth, ay - drop, c[1] - dz * 0.04 + nz * depth],
+            [a[0] + dx * 0.04 + nx * depth, ay - drop, a[1] + dz * 0.04 + nz * depth],
+            awC, [0, -1, 0], [0, 0], [1, 0], [1, 1], [0, 1]
+          );
+        }
+      }
+      const wantWin = L > 2.4 && winLit.length + winDark.length < WIN_CAP && !(mobile && (hb % 5) === 4);
+      if (wantWin) {
+        let n = lowRise ? Math.floor(L / (front ? 2.2 : 2.5)) : Math.floor((L - 0.5) / 2.3);
+        if (mobile) n = Math.min(n, front ? 3 : 2);
         if (i === doorEdge && n % 2 === 1) n--;
+        n = Math.max(0, n);
         for (let k = 0; k < n; k++) for (let f = 0; f < levels; f++) {
-          const tt = (k + 0.5) / n, wx = a[0] + dx * tt, wz = a[1] + dz * tt, wy = y0 + 1.55 + f * 3.0;
+          if (front && f === 0) continue;
+          const tt = (k + 0.5) / Math.max(n, 1), wx = a[0] + dx * tt, wz = a[1] + dz * tt;
+          const wy = baseY + 1.55 + f * storeyH;
           frames.push([wx + nx * 0.03, wy, wz + nz * 0.03, rot]);
-          (rnd() < 0.32 ? winLit : winDark).push([wx + nx * 0.075, wy, wz + nz * 0.075, rot]);
+          (h01(hb, 20 + k + f * 3) < 0.28 ? winLit : winDark).push([wx + nx * 0.075, wy, wz + nz * 0.075, rot]);
         }
       }
     }
-    if (stilt) { UB.tile = R_PLAIN; UB.poly(pts, y0, col('#7a5a3e'), true); }
-    const rc = satRoof(cx, cz) || col(pick(TIN));
-    if (quad && ar < 420 && roof !== 'flat') {
+    // Flat concrete roof (city default) or low skillion.
+    const rc = satRoof(cx, cz) || col(pickH(['#d8d4cc', '#cfc9c0', '#e0dcd4', '#c4c0b8', '#d2cec6'], hb, 14));
+    if (quad && roof === 'skillion' && ar < 400) {
       const [p0, p1, p2] = pts;
       const e0 = Math.hypot(p1[0] - p0[0], p1[1] - p0[1]), e1 = Math.hypot(p2[0] - p1[0], p2[1] - p1[1]);
       const [a, bb, c, d] = e0 >= e1 ? pts : [pts[1], pts[2], pts[3], pts[0]];
       const lu = Math.hypot(bb[0] - a[0], bb[1] - a[1]), lv = Math.hypot(d[0] - a[0], d[1] - a[1]);
       const ux = [(bb[0] - a[0]) / lu, (bb[1] - a[1]) / lu], vx = [(d[0] - a[0]) / lv, (d[1] - a[1]) / lv];
-      const pitch = roof === 'skillion' ? 0.22 : roof === 'hip' ? 0.34 : (lowRise ? 0.42 : 0.3);
-      const oh = lowRise ? 0.6 : 0.45, rh = lv * pitch + 0.3, sl = rh / (lv / 2), ey = h - sl * oh;
+      const pitch = 0.18, oh = 0.4, rh = lv * pitch + 0.2, sl = rh / (lv / 2), ey = h - sl * oh;
       const P = (p, du, dv, y) => [p[0] + ux[0] * du + vx[0] * dv, y, p[1] + ux[1] * du + vx[1] * dv];
-      const A = P(a, -oh, -oh, ey), Bv = P(bb, oh, -oh, ey), C = P(c, oh, oh, ey), D = P(d, -oh, oh, ey);
-      const m1 = [(bb[0] + c[0]) / 2, (bb[1] + c[1]) / 2], m3 = [(d[0] + a[0]) / 2, (d[1] + a[1]) / 2];
-      const M1 = P(m1, oh, 0, h + rh), M3 = P(m3, -oh, 0, h + rh);
+      const Ah = P(a, -oh, -oh, ey + rh), Bh = P(bb, oh, -oh, ey + rh), C = P(c, oh, oh, ey), D = P(d, -oh, oh, ey);
       const ref = (...q) => [q.reduce((s, p) => s + p[0], 0) / q.length - cx, q.reduce((s, p) => s + p[1], 0) / q.length - (h - 1), q.reduce((s, p) => s + p[2], 0) / q.length - cz];
       const uv = p => [(p[0] * ux[0] + p[2] * ux[1]) / 1.1, (p[0] * vx[0] + p[2] * vx[1]) / 1.1 + p[1] / 1.1];
-      const rtri = (q1, q2, q3) => { RB.tile = R_TIN; RB.tri(q1, q2, q3, rc, ref(q1, q2, q3), uv(q1), uv(q2), uv(q3)); const r = ref(q1, q2, q3); UB.tile = R_PLAIN; UB.tri(q1, q2, q3, col('#5e4a3a'), [-r[0], -r[1], -r[2]]); };
-      if (roof === 'skillion') {
-        // single slope, high side away from the street; two wedge infills on the short ends
-        const Ah = P(a, -oh, -oh, ey + rh), Bh = P(bb, oh, -oh, ey + rh);
-        rtri(Ah, Bh, C); rtri(Ah, C, D);
-        const Wa = [a[0], h, a[1]], Wb = [bb[0], h, bb[1]], Wc = [c[0], h, c[1]], Wd = [d[0], h, d[1]];
-        B.tri(Wb, Wc, Bh, wc, ref(Wb, Wc, Bh), [0, h / 2], [lv / 2, h / 2], [0, (h + rh) / 2]);
-        B.tri(Wd, Wa, Ah, wc, ref(Wd, Wa, Ah), [0, h / 2], [lv / 2, h / 2], [lv / 2, (h + rh) / 2]);
-      } else if (roof === 'hip') {
-        // ridge pulled in from both ends, so the gable walls are replaced by two hip slopes
-        const inset = Math.min(lu * 0.32, lv * 0.5);
-        const M1h = P(m1, oh - inset, 0, h + rh), M3h = P(m3, -oh + inset, 0, h + rh);
-        rtri(A, Bv, M1h); rtri(A, M1h, M3h); rtri(C, D, M3h); rtri(C, M3h, M1h);
-        rtri(Bv, C, M1h); rtri(D, A, M3h);
-      } else {
-        rtri(A, Bv, M1); rtri(A, M1, M3); rtri(C, D, M3); rtri(C, M3, M1);
-        const G1 = [bb[0], h, bb[1]], G2 = [c[0], h, c[1]], G3 = [d[0], h, d[1]], G4 = [a[0], h, a[1]], Mg1 = [m1[0], h + rh, m1[1]], Mg3 = [m3[0], h + rh, m3[1]];
-        B.tri(G1, G2, Mg1, wc, ref(G1, G2, Mg1), [0, h / 2], [lv / 2, h / 2], [lv / 4, (h + rh) / 2]);
-        B.tri(G3, G4, Mg3, wc, ref(G3, G4, Mg3), [0, h / 2], [lv / 2, h / 2], [lv / 4, (h + rh) / 2]);
-      }
+      const rtri = (q1, q2, q3) => { RB.tile = R_CONC; RB.tri(q1, q2, q3, rc, ref(q1, q2, q3), uv(q1), uv(q2), uv(q3)); };
+      rtri(Ah, Bh, C); rtri(Ah, C, D);
     } else {
       CB.tile = R_CONC;
-      CB.poly(pts, h - 0.45, col('#dcd6cc'));
-      for (let i = 0; i < pts.length; i++) { const a = pts[i], c = pts[(i + 1) % pts.length]; const mx = (a[0] + c[0]) / 2, mz = (a[1] + c[1]) / 2; CB.quad([a[0], h - 0.45, a[1]], [c[0], h - 0.45, c[1]], [c[0], h, c[1]], [a[0], h, a[1]], wc, [cx - mx, 0, cz - mz]); }
-      CB.poly(pts.map(p => [p[0], p[1]]), h, col('#efe9de'));
+      const rim = outset(pts, 0.25);
+      CB.poly(rim, h - 0.35, col('#d0cbc2'));
+      for (let i = 0; i < pts.length; i++) {
+        const a = pts[i], c = pts[(i + 1) % pts.length], ra = rim[i], rb = rim[(i + 1) % rim.length];
+        const mx = (a[0] + c[0]) / 2, mz = (a[1] + c[1]) / 2;
+        CB.quad([ra[0], h - 0.35, ra[1]], [rb[0], h - 0.35, rb[1]], [c[0], h, c[1]], [a[0], h, a[1]], wc, [cx - mx, 0, cz - mz]);
+      }
+      CB.poly(pts.map(p => [p[0], p[1]]), h, rc);
     }
+    // Compound fence (ခြံစည်းရိုး) around houses/brick lots — concrete wall + gate on the street side.
+    if ((type === 'house' || type === 'brick') && ar < 240) addCompoundFence(pts, cx, cz, hb, doorEdge);
+    if ((++bDone & 127) === 0) await yieldToPaint();
   }
   // All walls share one atlased material. The UVs tile (u = cum/2), so the cell lookup needs
   // fract(); that breaks the GPU's derivative-based mip choice, hence the explicit textureGrad.
   // The derivatives are clamped so a distant wall can never pick a mip coarse enough to bleed
   // between atlas cells.
-  const wallMat = std(0xffffff, { map: TX.wallAtlas, vertexColors: true, roughness: 0.9 });
-  wallMat.onBeforeCompile = sh => {
-    sh.vertexShader = 'attribute float aTile;\nvarying float vTile;\n' +
-      sh.vertexShader.replace('#include <uv_vertex>', '#include <uv_vertex>\n\tvTile = aTile;');
-    sh.fragmentShader = 'varying float vTile;\n' +
-      sh.fragmentShader.replace('#include <map_fragment>', [
-        '#ifdef USE_MAP',
-        '  vec2 cell = vec2( mod( vTile, 2.0 ), floor( vTile * 0.5 ) ) * 0.5;',
-        '  vec2 dx = clamp( dFdx( vMapUv ) * 0.5, -0.05, 0.05 );',
-        '  vec2 dy = clamp( dFdy( vMapUv ) * 0.5, -0.05, 0.05 );',
-        '  diffuseColor *= textureGrad( map, cell + fract( vMapUv ) * 0.5, dx, dy );',
-        '#endif',
-      ].join('\n'));
+  const atlasHook = (mat) => {
+    mat.onBeforeCompile = sh => {
+      sh.vertexShader = 'attribute float aTile;\nvarying float vTile;\n' +
+        sh.vertexShader.replace('#include <uv_vertex>', '#include <uv_vertex>\n\tvTile = aTile;');
+      sh.fragmentShader = 'varying float vTile;\n' +
+        sh.fragmentShader.replace('#include <map_fragment>', [
+          '#ifdef USE_MAP',
+          '  vec2 cell = vec2( mod( vTile, 2.0 ), floor( vTile * 0.5 ) ) * 0.5;',
+          '  vec2 dx = clamp( dFdx( vMapUv ) * 0.5, -0.05, 0.05 );',
+          '  vec2 dy = clamp( dFdy( vMapUv ) * 0.5, -0.05, 0.05 );',
+          '  diffuseColor *= textureGrad( map, cell + fract( vMapUv ) * 0.5, dx, dy );',
+          '#endif',
+        ].join('\n'));
+    };
+    return mat;
   };
-  houseA.forEach((h, i) => houseLists[i].length && instancedFromAsset(h, houseLists[i], scene));
-  WB.meshes(wallMat, true, true);
+  const wallMat = atlasHook(matCol(0xffffff, { map: TX.wallAtlas, vertexColors: true, roughness: 0.9 }));
+  houseA.forEach((h, i) => houseLists[i].length && instancedFromAsset(h, houseLists[i], scene, trackChunk));
+  WB.meshes(wallMat, !mobile, true);
+  PL.meshes(atlasHook(matCol(0xffffff, { map: TX.roofAtlas, vertexColors: true, roughness: 0.95 })), false, true);
+  FN.meshes(atlasHook(matCol(0xffffff, { map: TX.roofAtlas, vertexColors: true, roughness: 0.92 })), false, true);
+  AW.meshes(mobile ? new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide }) : new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85, side: THREE.DoubleSide }), false, false);
   // Roof tops, soffits and flat-roof slabs in one family. roughness/metalness come from the
   // ORM atlas so tin keeps its sheen next to matte concrete under a single material.
-  const roofMat = std(0xffffff, { map: TX.roofAtlas, roughnessMap: TX.roofORM, metalnessMap: TX.roofORM, vertexColors: true, roughness: 1, metalness: 1 });
-  roofMat.onBeforeCompile = sh => {
-    sh.vertexShader = 'attribute float aTile;\nvarying float vTile;\n' +
-      sh.vertexShader.replace('#include <uv_vertex>', '#include <uv_vertex>\n\tvTile = aTile;');
-    // each chunk is inlined into the same main(), so the locals need distinct names
-    const cell = (uv, n) => [
-      `  vec2 cell${n} = vec2( mod( vTile, 2.0 ), floor( vTile * 0.5 ) ) * 0.5;`,
-      `  vec2 dx${n} = clamp( dFdx( ${uv} ) * 0.5, -0.05, 0.05 );`,
-      `  vec2 dy${n} = clamp( dFdy( ${uv} ) * 0.5, -0.05, 0.05 );`,
-    ].join('\n');
-    sh.fragmentShader = 'varying float vTile;\n' + sh.fragmentShader
-      .replace('#include <map_fragment>', ['#ifdef USE_MAP', cell('vMapUv', 'M'),
-        '  diffuseColor *= textureGrad( map, cellM + fract( vMapUv ) * 0.5, dxM, dyM );', '#endif'].join('\n'))
-      .replace('#include <roughnessmap_fragment>', ['float roughnessFactor = roughness;', '#ifdef USE_ROUGHNESSMAP',
-        cell('vRoughnessMapUv', 'R'),
-        '  roughnessFactor *= textureGrad( roughnessMap, cellR + fract( vRoughnessMapUv ) * 0.5, dxR, dyR ).g;', '#endif'].join('\n'))
-      .replace('#include <metalnessmap_fragment>', ['float metalnessFactor = metalness;', '#ifdef USE_METALNESSMAP',
-        cell('vMetalnessMapUv', 'E'),
-        '  metalnessFactor *= textureGrad( metalnessMap, cellE + fract( vMetalnessMapUv ) * 0.5, dxE, dyE ).b;', '#endif'].join('\n'));
-  };
-  RFc.meshes(roofMat, true, true);
+  let roofMat;
+  if (mobile) {
+    roofMat = atlasHook(new THREE.MeshLambertMaterial({ map: TX.roofAtlas, vertexColors: true }));
+  } else {
+    roofMat = std(0xffffff, { map: TX.roofAtlas, roughnessMap: TX.roofORM, metalnessMap: TX.roofORM, vertexColors: true, roughness: 1, metalness: 1 });
+    roofMat.onBeforeCompile = sh => {
+      sh.vertexShader = 'attribute float aTile;\nvarying float vTile;\n' +
+        sh.vertexShader.replace('#include <uv_vertex>', '#include <uv_vertex>\n\tvTile = aTile;');
+      const cell = (uv, n) => [
+        `  vec2 cell${n} = vec2( mod( vTile, 2.0 ), floor( vTile * 0.5 ) ) * 0.5;`,
+        `  vec2 dx${n} = clamp( dFdx( ${uv} ) * 0.5, -0.05, 0.05 );`,
+        `  vec2 dy${n} = clamp( dFdy( ${uv} ) * 0.5, -0.05, 0.05 );`,
+      ].join('\n');
+      sh.fragmentShader = 'varying float vTile;\n' + sh.fragmentShader
+        .replace('#include <map_fragment>', ['#ifdef USE_MAP', cell('vMapUv', 'M'),
+          '  diffuseColor *= textureGrad( map, cellM + fract( vMapUv ) * 0.5, dxM, dyM );', '#endif'].join('\n'))
+        .replace('#include <roughnessmap_fragment>', ['float roughnessFactor = roughness;', '#ifdef USE_ROUGHNESSMAP',
+          cell('vRoughnessMapUv', 'R'),
+          '  roughnessFactor *= textureGrad( roughnessMap, cellR + fract( vRoughnessMapUv ) * 0.5, dxR, dyR ).g;', '#endif'].join('\n'))
+        .replace('#include <metalnessmap_fragment>', ['float metalnessFactor = metalness;', '#ifdef USE_METALNESSMAP',
+          cell('vMetalnessMapUv', 'E'),
+          '  metalnessFactor *= textureGrad( metalnessMap, cellE + fract( vMetalnessMapUv ) * 0.5, dxE, dyE ).b;', '#endif'].join('\n'));
+    };
+  }
+  RFc.meshes(roofMat, !mobile, true);
   const litMat = new THREE.MeshBasicMaterial({ color: 0x3a4452, map: TX.windowLit });
   const WINC = ['#ffffff', '#ffffff', '#ffe2b8', '#ffd0a0', '#d9ecff', '#e8f6ff'].map(c => col(c));
   const winGeo = new THREE.PlaneGeometry(0.78, 0.95);
-  mkInst(frames, new THREE.BoxGeometry(0.98, 1.14, 0.06), std(0x5a3d2b, { roughness: 0.7 }));
-  mkInst(winLit, winGeo, litMat, 0, false, w => WINC[Math.floor(Math.abs(w[0] * 3.1 + w[2] * 1.7)) % WINC.length]); mkInst(winDark, winGeo, std(0x34404d, { roughness: 0.15, metalness: 0.5 }));
-  mkInst(doors, new THREE.BoxGeometry(1.0, 2.1, 0.08), std(0x6b4630, { map: TX.wood, roughness: 0.75 }));
-  { const pg = new THREE.CylinderGeometry(0.11, 0.13, 1, 6); pg.translate(0, 0.5, 0); mkInst(posts, pg, std(0x6e5038, { map: TX.wood, roughness: 0.9 }), 0, true); }
+  if (frames.length) mkInst(frames, new THREE.BoxGeometry(0.98, 1.14, 0.06), matCol(0x5a3d2b, { roughness: 0.7 }));
+  mkInst(winLit, winGeo, litMat, 0, false, w => WINC[Math.floor(Math.abs(w[0] * 3.1 + w[2] * 1.7)) % WINC.length]);
+  mkInst(winDark, winGeo, mobile ? new THREE.MeshBasicMaterial({ color: 0x34404d }) : std(0x34404d, { roughness: 0.15, metalness: 0.5 }));
+  mkInst(doors, new THREE.BoxGeometry(1.0, 2.1, 0.08), matCol(0x6b4630, { map: TX.wood, roughness: 0.75 }));
+  if (posts.length) { const pg = new THREE.CylinderGeometry(0.11, 0.13, 1, mobile ? 5 : 6); pg.translate(0, 0.5, 0); mkInst(posts, pg, matCol(0x6e5038, { map: TX.wood, roughness: 0.9 }), 0, !mobile); }
+  // Square concrete pillars for compound fence corners / gates.
+  if (pillars.length) {
+    const pg = new THREE.BoxGeometry(0.28, 1, 0.28); pg.translate(0, 0.5, 0);
+    mkInst(pillars, pg, matCol(0xe8e4dc, { roughness: 0.9 }), 0, false);
+  }
 
   // ---------- pagodas ----------
   const PM = makePagodaMats(TX);
@@ -478,56 +614,97 @@ export async function createGame(o) {
   }
 
   // ---------- trees & bushes ----------
-  const trees = [];
+  // Green-area trees go in now so the town is not bare at first ride. Roadside trees, scatter,
+  // and bushes are deferred until after ready so the build freeze ends sooner on phones.
+  const TREE_CAP = mobile ? 450 : 2800;
+  const GREEN_CAP = mobile ? 350 : 2600;
+  const BUSH_CAP = mobile ? 180 : 1500;
   const okTree = (x, z) => Math.abs(x) < BX - 2 && Math.abs(z) < BZ - 2 && !blocked(x, z) && roadClear(x, z) > 1.8 && railClear(x, z) > 3;
+  const trees = [];
   for (const g of W.greens) {
     if (!g.trees) continue;
-    const ar = area(g.pts), n = Math.min(300, Math.floor(ar / 900 * g.trees));
+    const ar = area(g.pts), n = Math.min(mobile ? 40 : 300, Math.floor(ar / 900 * g.trees));
     let x0 = 1e9, z0 = 1e9, x1 = -1e9, z1 = -1e9; for (const p of g.pts) { x0 = Math.min(x0, p[0]); z0 = Math.min(z0, p[1]); x1 = Math.max(x1, p[0]); z1 = Math.max(z1, p[1]); }
-    for (let i = 0, tries = 0; i < n && tries < n * 4 && trees.length < 2600; tries++) { const x = x0 + rnd() * (x1 - x0), z = z0 + rnd() * (z1 - z0); if (pip(x, z, g.pts) && okTree(x, z)) { trees.push([x, z, rnd() < g.palm ? 1 : 0, 0.75 + rnd() * 0.55]); i++; } }
+    for (let i = 0, tries = 0; i < n && tries < n * 4 && trees.length < GREEN_CAP; tries++) { const x = x0 + rnd() * (x1 - x0), z = z0 + rnd() * (z1 - z0); if (pip(x, z, g.pts) && okTree(x, z)) { trees.push([x, z, rnd() < g.palm ? 1 : 0, 0.75 + rnd() * 0.55]); i++; } }
   }
-  for (const s of roadSegs) {
-    if (trees.length > 3200) break;
-    const r = s[6]; if (!DRIVE.has(r.type) && r.type !== 'track') continue;
-    const dx = s[2] - s[0], dz = s[3] - s[1], L = Math.hypot(dx, dz);
-    for (let d = 5; d < L; d += 18 + rnd() * 22) { if (rnd() < 0.5) continue; const side = rnd() < 0.5 ? -1 : 1, off = r.w / 2 + 2.4 + rnd() * 2; const x = s[0] + dx * d / L - dz / L * side * off, z = s[1] + dz * d / L + dx / L * side * off; if (okTree(x, z)) trees.push([x, z, rnd() < 0.4 ? 1 : 0, 0.7 + rnd() * 0.45]); }
-  }
-  for (let i = 0; i < 900 && trees.length < 2800; i++) { const x = (rnd() * 2 - 1) * (BX - 4), z = (rnd() * 2 - 1) * (BZ - 4); if (okTree(x, z) && roadClear(x, z) > 4) trees.push([x, z, rnd() < 0.6 ? 1 : 0, 0.8 + rnd() * 0.5]); }
-  const bushes = [];
-  for (const b of W.buildings) { if (bushes.length > 1500 || rnd() > 0.35) continue; const [cx, cz] = centroid(b.pts); const p = b.pts[Math.floor(rnd() * b.pts.length)]; const x = p[0] + (p[0] - cx) * 0.25, z = p[1] + (p[1] - cz) * 0.25; if (!blocked(x, z) && roadClear(x, z) > 0.8) bushes.push([x, z, 0, 0.7 + rnd() * 0.6]); }
-  {
-    const palms = trees.filter(t => t[2] === 1).map(t => [t[0], t[1], t[0] * 13.1 % 6.28, t[3]]), rounds = trees.filter(t => t[2] === 0).map(t => [t[0], t[1], t[0] * 7.7 % 6.28, t[3]]);
-    const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler(), v = new THREE.Vector3(), s = new THREE.Vector3(), c = new THREE.Color();
-    const place = (list, geo, mat, colors) => {
-      if (!list.length) return;
-      for (const part of byChunk(list, 0, 1)) { const im = new THREE.InstancedMesh(geo, mat, part.length);
-      part.forEach((t, i) => { q.setFromEuler(e.set(0, t[2], 0)); m4.compose(v.set(t[0], 0, t[1]), q, s.set(t[3], t[3], t[3])); im.setMatrixAt(i, m4); if (colors) im.setColorAt(i, c.set(colors[Math.floor(Math.abs(t[0] * 7 + t[1] * 3)) % colors.length])); });
-      im.computeBoundingSphere(); im.castShadow = true; im.receiveShadow = true; scene.add(im); }
-    };
-    const vc = o => std(0xffffff, Object.assign({ vertexColors: true, roughness: 0.85 }, o));
-    if (assets.palm) instancedFromAsset(assets.palm, palms, scene);
-    else { const P = palmGeometries(); place(palms, P.trunk, vc({ roughness: 0.95 })); place(palms, P.crown, vc({ side: THREE.DoubleSide, roughness: 0.7 }), ['#ffffff', '#f0f5e8', '#e6ecd8']); }
-    const treeA = assets.tree ? (Array.isArray(assets.tree) ? assets.tree : [assets.tree]) : [];
-    if (treeA.length) { const treeLists = treeA.map(() => []); for (const t of rounds) treeLists[Math.floor(Math.abs(t[0] * 11 + t[1] * 5)) % treeA.length].push(t); treeA.forEach((a, i) => treeLists[i].length && instancedFromAsset(a, treeLists[i], scene)); }
-    else { const R = roundTreeGeometries(); place(rounds, R.trunk, vc({ roughness: 0.95 })); place(rounds, R.canopy, vc({ flatShading: true, roughness: 0.8 }), ['#6fae5a', '#86bf64', '#5b9a52', '#9cc56b', '#7aa84e']); }
-    place(bushes, bushGeometry(), vc({ flatShading: true }), ['#6fae5a', '#5b9a52', '#d9488f', '#86bf64', '#e0609a', '#7aa84e']);
-  }
+  await yieldToPaint();
+  const m4t = new THREE.Matrix4(), qt = new THREE.Quaternion(), et = new THREE.Euler(), vt = new THREE.Vector3(), st = new THREE.Vector3(), ct = new THREE.Color();
+  const placeTrees = (list, geo, mat, colors) => {
+    if (!list.length) return;
+    for (const [k, part] of byChunk(list, 0, 1)) {
+      const im = new THREE.InstancedMesh(geo, mat, part.length);
+      part.forEach((t, i) => { qt.setFromEuler(et.set(0, t[2], 0)); m4t.compose(vt.set(t[0], 0, t[1]), qt, st.set(t[3], t[3], t[3])); im.setMatrixAt(i, m4t); if (colors) im.setColorAt(i, ct.set(colors[Math.floor(Math.abs(t[0] * 7 + t[1] * 3)) % colors.length])); });
+      im.computeBoundingSphere(); im.castShadow = !mobile; im.receiveShadow = true; scene.add(im);
+      const p = k.split(','); trackChunk(im, +p[0], +p[1]);
+    }
+  };
+  const vcTree = o => matCol(0xffffff, Object.assign({ vertexColors: true, roughness: 0.85 }, o));
+  const palmGeo = assets.palm ? null : palmGeometries();
+  const roundGeo = assets.tree ? null : roundTreeGeometries();
+  const treeA = assets.tree ? (Array.isArray(assets.tree) ? assets.tree : [assets.tree]) : [];
+  const plantTrees = list => {
+    const palms = list.filter(t => t[2] === 1).map(t => [t[0], t[1], t[0] * 13.1 % 6.28, t[3]]);
+    const rounds = list.filter(t => t[2] === 0).map(t => [t[0], t[1], t[0] * 7.7 % 6.28, t[3]]);
+    if (assets.palm) instancedFromAsset(assets.palm, palms, scene, trackChunk);
+    else { placeTrees(palms, palmGeo.trunk, vcTree({ roughness: 0.95 })); placeTrees(palms, palmGeo.crown, vcTree({ side: THREE.DoubleSide, roughness: 0.7 }), ['#ffffff', '#f0f5e8', '#e6ecd8']); }
+    if (treeA.length) { const treeLists = treeA.map(() => []); for (const t of rounds) treeLists[Math.floor(Math.abs(t[0] * 11 + t[1] * 5)) % treeA.length].push(t); treeA.forEach((a, i) => treeLists[i].length && instancedFromAsset(a, treeLists[i], scene, trackChunk)); }
+    else { placeTrees(rounds, roundGeo.trunk, vcTree({ roughness: 0.95 })); placeTrees(rounds, roundGeo.canopy, vcTree({ flatShading: true, roughness: 0.8 }), ['#6fae5a', '#86bf64', '#5b9a52', '#9cc56b', '#7aa84e']); }
+  };
+  plantTrees(trees);
+  const bushMat = vcTree({ flatShading: true });
+  const bushGeo = bushGeometry();
+  const BUSH_COLS = ['#6fae5a', '#5b9a52', '#d9488f', '#86bf64', '#e0609a', '#7aa84e'];
+  const plantBushes = list => placeTrees(list, bushGeo, bushMat, BUSH_COLS);
+  const deferDecor = () => {
+    if (disposed) return;
+    const extra = [];
+    const roadStep = mobile ? 36 : 18;
+    for (const s of roadSegs) {
+      if (trees.length + extra.length > TREE_CAP) break;
+      const r = s[6]; if (!DRIVE.has(r.type) && r.type !== 'track') continue;
+      const dx = s[2] - s[0], dz = s[3] - s[1], L = Math.hypot(dx, dz);
+      for (let d = 5; d < L; d += roadStep + rnd() * 22) {
+        if (rnd() < (mobile ? 0.7 : 0.5)) continue;
+        const side = rnd() < 0.5 ? -1 : 1, off = r.w / 2 + 2.4 + rnd() * 2;
+        const x = s[0] + dx * d / L - dz / L * side * off, z = s[1] + dz * d / L + dx / L * side * off;
+        if (okTree(x, z)) extra.push([x, z, rnd() < 0.4 ? 1 : 0, 0.7 + rnd() * 0.45]);
+      }
+    }
+    const scatterN = mobile ? 200 : 900;
+    for (let i = 0; i < scatterN && trees.length + extra.length < TREE_CAP; i++) {
+      const x = (rnd() * 2 - 1) * (BX - 4), z = (rnd() * 2 - 1) * (BZ - 4);
+      if (okTree(x, z) && roadClear(x, z) > 4) extra.push([x, z, rnd() < 0.6 ? 1 : 0, 0.8 + rnd() * 0.5]);
+    }
+    plantTrees(extra);
+    const bushes = [];
+    const bushChance = mobile ? 0.08 : 0.35;
+    for (const b of W.buildings) {
+      if (bushes.length > BUSH_CAP || rnd() > bushChance) continue;
+      const [cx, cz] = centroid(b.pts); const p = b.pts[Math.floor(rnd() * b.pts.length)];
+      const x = p[0] + (p[0] - cx) * 0.25, z = p[1] + (p[1] - cz) * 0.25;
+      if (!blocked(x, z) && roadClear(x, z) > 0.8) bushes.push([x, z, 0, 0.7 + rnd() * 0.6]);
+    }
+    plantBushes(bushes);
+    collectMats();
+  };
 
   // ---------- street lamps ----------
   const lamps = [];
-  for (const s of roadSegs) { const r = s[6]; if (!MAJOR.has(r.type) || lamps.length > 500) continue; const dx = s[2] - s[0], dz = s[3] - s[1], L = Math.hypot(dx, dz); for (let d = 10; d < L; d += 36) { const off = r.w / 2 + 1.0, x = s[0] + dx * d / L - dz / L * off, z = s[1] + dz * d / L + dx / L * off; if (!blocked(x, z) && railClear(x, z) > 3) lamps.push([x, 0, z, Math.atan2(-dz, dx) + Math.PI / 2]); } }
+  const lampStep = mobile ? 56 : 36, lampCap = mobile ? 120 : 500;
+  for (const s of roadSegs) { const r = s[6]; if (!MAJOR.has(r.type) || lamps.length > lampCap) continue; const dx = s[2] - s[0], dz = s[3] - s[1], L = Math.hypot(dx, dz); for (let d = 10; d < L; d += lampStep) { const off = r.w / 2 + 1.0, x = s[0] + dx * d / L - dz / L * off, z = s[1] + dz * d / L + dx / L * off; if (!blocked(x, z) && railClear(x, z) > 3) lamps.push([x, 0, z, Math.atan2(-dz, dx) + Math.PI / 2]); } }
   const bulbMat = new THREE.MeshBasicMaterial({ color: 0xdddddd });
   if (lamps.length) {
-    const pole = new THREE.CylinderGeometry(0.06, 0.1, 5, 6); pole.translate(0, 2.5, 0);
+    const pole = new THREE.CylinderGeometry(0.06, 0.1, 5, mobile ? 5 : 6); pole.translate(0, 2.5, 0);
     const arm = new THREE.BoxGeometry(0.06, 0.06, 1.0); arm.translate(0, 4.95, -0.45);
-    const metal = std(0x4a4f57, { metalness: 0.7, roughness: 0.4 });
-    mkInst(lamps, pole, metal, 0, true); mkInst(lamps, arm, metal);
-    const bg = new THREE.SphereGeometry(0.2, 10, 8); bg.scale(1, 0.6, 1); bg.translate(0, 4.85, -0.9); mkInst(lamps, bg, bulbMat);
+    const metal = matCol(0x4a4f57, { metalness: 0.7, roughness: 0.4 });
+    mkInst(lamps, pole, metal, 0, !mobile); mkInst(lamps, arm, metal);
+    const bg = new THREE.SphereGeometry(0.2, mobile ? 6 : 10, mobile ? 5 : 8); bg.scale(1, 0.6, 1); bg.translate(0, 4.85, -0.9); mkInst(lamps, bg, bulbMat);
   }
 
   // stars
   const starGeo = new THREE.BufferGeometry(), sp = [];
-  for (let i = 0; i < 900; i++) { const a = Math.random() * 6.28, el = Math.random() * 1.3 + 0.1; sp.push(Math.cos(a) * Math.cos(el) * 2400, Math.sin(el) * 2400, Math.sin(a) * Math.cos(el) * 2400); }
+  const starN = mobile ? 180 : 900;
+  for (let i = 0; i < starN; i++) { const a = Math.random() * 6.28, el = Math.random() * 1.3 + 0.1; sp.push(Math.cos(a) * Math.cos(el) * 2400, Math.sin(el) * 2400, Math.sin(a) * Math.cos(el) * 2400); }
   starGeo.setAttribute('position', new THREE.Float32BufferAttribute(sp, 3));
   const starMat = new THREE.PointsMaterial({ color: 0xffffff, size: 2, sizeAttenuation: false, transparent: true, opacity: 0, fog: false, depthWrite: false });
   const stars = new THREE.Points(starGeo, starMat); stars.frustumCulled = false; scene.add(stars);
@@ -579,7 +756,7 @@ export async function createGame(o) {
     a.from = mpick(pool); a.to = mpick(a.from.adj); a.t = Math.random(); a.cur = a.speed;
     scene.add(a.g); agents.push(a);
   };
-  const TRAFFIC = mobile ? { Quiet: [5, 6], Normal: [9, 11], Busy: [14, 18] } : { Quiet: [8, 12], Normal: [18, 24], Busy: [32, 44] };
+  const TRAFFIC = mobile ? { Quiet: [3, 4], Normal: [6, 7], Busy: [10, 12] } : { Quiet: [8, 12], Normal: [18, 24], Busy: [32, 44] };
   const setTraffic = lvl => {
     const [nv, np] = TRAFFIC[lvl] || TRAFFIC.Normal;
     const vs = agents.filter(a => a.type !== 'ped'), ps = agents.filter(a => a.type === 'ped');
@@ -694,25 +871,28 @@ export async function createGame(o) {
 
   // ---------- fx ----------
   const fx = post ? makeComposer(renderer, scene, camera, 4) : null;
-  const motes = null; if (motes) scene.add(motes.points);
+  const motes = post ? makeMotes(TX.dot, 420) : null; if (motes) scene.add(motes.points);
   const puffs = makePuffs(); scene.add(puffs.points);
 
   const stdMats = new Set();
-  function collectMats() { scene.traverse(o => { if (!o.isMesh) return; (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => { if (m && m.isMeshStandardMaterial && !stdMats.has(m)) { m.userData.envBase = m.metalness > 0.5 ? 0.9 : 0.28; stdMats.add(m); } }); }); }
+  function collectMats() { scene.traverse(o => { if (!o.isMesh) return; (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => { if (m && m.isMeshStandardMaterial && !stdMats.has(m)) { m.userData.envBase = m.metalness > 0.5 ? 1.15 : 0.42; stdMats.add(m); } }); }); }
   setTraffic(opts.traffic);
 
   // ---------- loop ----------
-  let perfAcc = 0, perfN = 0, hour = opts.realClock ? nowHour() : opts.startHour, dayMin = opts.dayMinutes, playing = false, camMode = 1, popup = null, popT = 0, hudT = 0, mmT = 0, envT = 0, bumpT = 0, puffT = 0, last = performance.now(), raf = 0, frozen = false;
-  const CAM = [{ d: 6.5, h: 2.8, blur: 0 }, { d: 13, h: 7, blur: 0.4 }];
-  const camPos = new THREE.Vector3(P.x - Math.sin(P.h) * 15, 9, P.z - Math.cos(P.h) * 15), look = new THREE.Vector3(), want = new THREE.Vector3();
-  const SKY_TOP_D = col('#5fa8e0'), SKY_HOR_D = col('#cfe9f5'), SKY_TOP_N = col('#0b1226'), SKY_HOR_N = col('#22304f'), SKY_HOR_S = col('#f5a46e'), SKY_TOP_S = col('#6b6fa8');
+  let perfAcc = 0, perfN = 0, hour = opts.realClock ? nowHour() : opts.startHour, dayMin = opts.dayMinutes, playing = false, camMode = 0, popup = null, popT = 0, hudT = 0, mmT = 0, envT = 0, bumpT = 0, puffT = 0, cullT = 0, last = performance.now(), raf = 0, frozen = false, disposed = false;
+  const AGENT_R = mobile ? 100 : 170;
+  const decorTimer = setTimeout(deferDecor, 120);
+  // Over-the-shoulder default; second mode still closer than the old 13 m pull-back.
+  const CAM = [{ d: 2.85, h: 1.38, blur: 0, look: 1.15, lookY: 0.98 }, { d: 6.2, h: 3.15, blur: 0.3, look: 2.1, lookY: 1.1 }];
+  const camPos = new THREE.Vector3(P.x - Math.sin(P.h) * CAM[0].d, CAM[0].h, P.z - Math.cos(P.h) * CAM[0].d), look = new THREE.Vector3(), want = new THREE.Vector3();
+  const SKY_TOP_D = col('#4e9fdc'), SKY_HOR_D = col('#d9eef8'), SKY_TOP_N = col('#070d1c'), SKY_HOR_N = col('#1a2744'), SKY_HOR_S = col('#ff9a5c'), SKY_TOP_S = col('#7a6fb0');
   const tmp = new THREE.Color(), tmp2 = new THREE.Color(), WIN_D = col('#3a4452'), WIN_N = col('#ffffff'), BULB_D = col('#d6d6d6'), BULB_N = col('#ffe7a8'), MOON = col('#9fb4ff');
   const blockedR = (x, z) => Math.abs(x) > HW + 8 || Math.abs(z) > HH + 8 || blocked(x, z) || blocked(x + 0.45, z) || blocked(x - 0.45, z) || blocked(x, z + 0.45) || blocked(x, z - 0.45);
   // three.js fov is VERTICAL, so a tall phone screen collapses the horizontal field: 46 deg
   // vertical is 85 deg across in landscape but only 22 deg in portrait, magnifying the world
   // ~4x and making every texel cover 4x the pixels - which reads as blur. Widen the vertical
   // fov on narrow screens to hold a sane horizontal field. Landscape and desktop are untouched.
-  const FOV = 46, HFOV_MIN = 55, FOV_MAX = 72;
+  const FOV = best ? 42 : mobile ? 44 : 46, HFOV_MIN = 55, FOV_MAX = 72;
   const resize = () => { const w = container.clientWidth || 1, h = container.clientHeight || 1; renderer.setSize(w, h, false); camera.aspect = w / h;
     const want = 2 * Math.atan(Math.tan(HFOV_MIN * Math.PI / 360) / camera.aspect) * 180 / Math.PI;
     camera.fov = Math.min(FOV_MAX, Math.max(FOV, want));
@@ -728,8 +908,12 @@ export async function createGame(o) {
     // Hysteresis band: climb while a frame fits in 18 ms (a vsync-capped 60 Hz display sits at
     // 16.7, so the old 14.5 ms gate was unreachable and the ratio could only ever fall), back off
     // past 24 ms. The device settles at the sharpest resolution it can actually hold.
-    if (perfN > 30 && perfAcc > 1.5) { const avg = perfAcc / perfN; perfAcc = 0; perfN = 0; let np = pr; const drop = mobile ? 0.034 : 0.024, floor = mobile ? Math.min(2, MAXPR) : 0.6;
-      if (avg > drop) np = Math.max(floor, pr * (avg > drop * 1.7 ? 0.8 : 0.9)); else if (avg < (mobile ? 0.028 : 0.018)) np = Math.min(MAXPR, pr + 0.1); if (Math.abs(np - pr) > 0.01) { pr = np; renderer.setPixelRatio(pr); resize(); } }
+    if (perfN > 30 && perfAcc > 1.5) { const avg = perfAcc / perfN; perfAcc = 0; perfN = 0; let np = pr;
+      // Phones: prefer staying sharp (floor 1.25). Only back off hard past ~26 fps.
+      const drop = mobile ? 0.038 : 0.024, floor = mobile ? 1.25 : 0.6, climb = mobile ? 0.026 : 0.018;
+      if (avg > drop) np = Math.max(floor, pr * (avg > drop * 1.7 ? 0.85 : 0.92));
+      else if (avg < climb) np = Math.min(MAXPR, pr + (mobile ? 0.12 : 0.1));
+      if (Math.abs(np - pr) > 0.01) { pr = np; renderer.setPixelRatio(pr); resize(); } }
     const tsec = now / 1000;
     let steer = 0, thr = 0;
     if (playing) {
@@ -765,21 +949,39 @@ export async function createGame(o) {
     const sdx = Math.cos(ang), sdy = elev, sdz = 0.35;
     sky.material.uniforms.sunDir.value.set(sdx, sdy, sdz).normalize(); sky.material.uniforms.sunCol.value.setRGB(1, 0.8 + 0.2 * (1 - dusk), 0.6 + 0.4 * (1 - dusk)).multiplyScalar(day);
     sky.position.copy(camera.position); stars.position.copy(camera.position);
-    if (elev > -0.05) { sun.intensity = day * 2.4; sun.color.setRGB(1, 0.82 + 0.18 * (1 - dusk), 0.62 + 0.38 * (1 - dusk)); sun.position.set(P.x + sdx * 140, Math.max(0.12, elev) * 160 + 8, P.z + sdz * 140); }
-    else { sun.intensity = 0.35 * night; sun.color.copy(MOON); sun.position.set(P.x - sdx * 120, -elev * 150 + 30, P.z - 60); }
+    if (elev > -0.05) {
+      sun.intensity = day * (2.2 + dusk * 0.7); sun.color.setRGB(1, 0.78 + 0.2 * (1 - dusk), 0.55 + 0.4 * (1 - dusk));
+      sun.position.set(P.x + sdx * 140, Math.max(0.12, elev) * 160 + 8, P.z + sdz * 140);
+    } else {
+      sun.intensity = 0.42 * night; sun.color.copy(MOON);
+      sun.position.set(P.x - sdx * 120, -elev * 150 + 30, P.z - 60);
+    }
     const tx = Math.round(P.x / 1.5) * 1.5, tz = Math.round(P.z / 1.5) * 1.5;
     sun.position.x += tx - P.x; sun.position.z += tz - P.z; sun.target.position.set(tx, 0, tz);
-    hemi.intensity = 0.2 + day * 0.55; hemi.color.setRGB(0.5 + 0.45 * day, 0.58 + 0.37 * day, 0.85 + 0.12 * day);
+    if (fill) {
+      fill.position.set(tx - sdx * 80, 40 + day * 30, tz - sdz * 80); fill.target.position.set(tx, 0, tz);
+      fill.intensity = 0.12 + day * 0.28; fill.color.setRGB(0.55 + 0.2 * day, 0.65 + 0.15 * day, 0.85);
+    }
+    hemi.intensity = (mobile ? 0.55 : 0.28) + day * 0.62 + dusk * 0.12;
+    hemi.color.setRGB(0.45 + 0.5 * day, 0.55 + 0.38 * day, 0.78 + 0.18 * day);
+    hemi.groundColor.setRGB(0.55 + 0.2 * day, 0.42 + 0.18 * day, 0.28 + 0.1 * day);
+    renderer.toneMappingExposure = (best ? 1.02 : mobile ? 1.0 : 0.94) + dusk * 0.12 + night * 0.08;
     const glow = THREE.MathUtils.smoothstep(night, 0.3, 0.8);
-    litMat.color.copy(WIN_D).lerp(WIN_N, glow).multiplyScalar(1 + glow * 0.3);
-    bulbMat.color.copy(BULB_D).lerp(BULB_N, night).multiplyScalar(1 + night * 1.8);
+    litMat.color.copy(WIN_D).lerp(WIN_N, glow).multiplyScalar(1 + glow * 0.45);
+    bulbMat.color.copy(BULB_D).lerp(BULB_N, night).multiplyScalar(1 + night * 2.1);
     starMat.opacity = THREE.MathUtils.smoothstep(night, 0.5, 1);
-    headlight.intensity = night * 1.3; BK.lensM.emissiveIntensity = night * 3;
-    vehicleLights.head.emissiveIntensity = 0.1 + night * 4; vehicleLights.tail.emissiveIntensity = 0.2 + night * 3;
-    PM.gold.emissiveIntensity = night * 1.4; if (train && train.lights) train.lights.emissiveIntensity = 0.3 + night * 5;
+    headlight.intensity = night * 1.55; BK.lensM.emissiveIntensity = night * 3.4;
+    vehicleLights.head.emissiveIntensity = 0.1 + night * 4.5; vehicleLights.tail.emissiveIntensity = 0.2 + night * 3.4;
+    PM.gold.emissiveIntensity = night * 1.7; if (train && train.lights) train.lights.emissiveIntensity = 0.3 + night * 5.5;
     waterMat.uniforms.time.value = tsec; waterMat.uniforms.day.value = day; waterMat.uniforms.sunDir.value.copy(sky.material.uniforms.sunDir.value); waterMat.uniforms.sky.value.copy(tmp2);
-    envT -= dt; if (envT <= 0) { envT = 0.5; for (const m of stdMats) m.envMapIntensity = m.userData.envBase * (0.12 + 0.88 * day); }
-    if (fx) { fx.bloom.enabled = night > 0.15; fx.bloom.strength = night * 0.45; fx.bloom.threshold = 1.05; fx.bloom.radius = 0.35; }
+    envT -= dt; if (envT <= 0) { envT = 0.5; for (const m of stdMats) m.envMapIntensity = m.userData.envBase * (0.22 + 0.95 * day + dusk * 0.25); }
+    if (fx) {
+      // Soft daytime bloom for sun glints; stronger at night for windows/lamps.
+      fx.bloom.enabled = true;
+      fx.bloom.strength = 0.12 + night * 0.55 + dusk * 0.18;
+      fx.bloom.threshold = night > 0.4 ? 0.85 : 1.15;
+      fx.bloom.radius = 0.42;
+    }
     if (motes) motes.update(tsec, P.x, P.z, night);
     puffs.update(dt, 0.35 + day * 0.65);
 
@@ -792,7 +994,7 @@ export async function createGame(o) {
       a.t += a.cur * dt / L;
       if (a.t >= 1) { const nb = a.to.adj.filter(n => n !== a.from); const nxt = nb.length ? mpick(nb) : a.from; a.from = a.to; a.to = nxt; a.t = 0; }
       a.g.position.set(cx, 0, cz);
-      const vis = Math.abs(cx - P.x) < 170 && Math.abs(cz - P.z) < 170; a.g.visible = vis; if (!vis) { a.g.rotation.y = Math.atan2(ux, uz); continue; }
+      const vis = Math.abs(cx - P.x) < AGENT_R && Math.abs(cz - P.z) < AGENT_R; a.g.visible = vis; if (!vis) { a.g.rotation.y = Math.atan2(ux, uz); continue; }
       let d = Math.atan2(ux, uz) - a.g.rotation.y; d = Math.atan2(Math.sin(d), Math.cos(d)); a.g.rotation.y += d * Math.min(1, dt * 8);
       if (a.mixer) a.mixer.update(dt * (a.cur / a.speed + 0.05));
       if (a.type === 'ped') {
@@ -822,10 +1024,16 @@ export async function createGame(o) {
     }
     popT -= dt;
     if (popT <= 0) { popT = 0.3; let bp = null, bd = 28; for (const p of W.pois) { const d = Math.hypot(p.x - P.x, p.z - P.z); if (d < bd) { bd = d; bp = p; } } popup = bp; }
-    const cm = CAM[camMode], k = 1 - Math.exp(-dt * 3.5);
+    const cm = CAM[camMode], k = 1 - Math.exp(-dt * 4.2);
     want.set(P.x - Math.sin(P.h) * cm.d, cm.h, P.z - Math.cos(P.h) * cm.d);
     camPos.lerp(want, k); camera.position.copy(camPos);
-    look.set(P.x + Math.sin(P.h) * 3, 1.2, P.z + Math.cos(P.h) * 3); camera.lookAt(look);
+    look.set(P.x + Math.sin(P.h) * cm.look, cm.lookY, P.z + Math.cos(P.h) * cm.look); camera.lookAt(look);
+    cullT -= dt;
+    if (cullT <= 0) {
+      cullT = 0.2;
+      const pix = Math.floor(P.x / CHUNK), piz = Math.floor(P.z / CHUNK);
+      for (const c of cullMeshes) { const d = Math.max(Math.abs(c.ix - pix), Math.abs(c.iz - piz)); c.me.visible = d <= CULL_R; }
+    }
     if (fx) fx.render(dt); else renderer.render(scene, camera);
     mmT -= dt; if (mmT <= 0) { mmT = 0.12; drawMinimap(); }
     hudT -= dt;
@@ -848,7 +1056,7 @@ export async function createGame(o) {
     setTraffic,
     setHour(h) { hour = h; },
     pause(v) { frozen = !!v; },
-    dispose() { cancelAnimationFrame(raf); ro.disconnect(); window.removeEventListener('keydown', kd); window.removeEventListener('keyup', ku); renderer.dispose(); renderer.domElement.remove(); },
+    dispose() { disposed = true; clearTimeout(decorTimer); cancelAnimationFrame(raf); ro.disconnect(); window.removeEventListener('keydown', kd); window.removeEventListener('keyup', ku); renderer.dispose(); renderer.domElement.remove(); },
   };
   return api;
 }
