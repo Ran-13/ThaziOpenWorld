@@ -291,3 +291,54 @@ export function makePerson(T) {
   bake(g, [...arms, ...feet]);
   return { group: g, arms, feet };
 }
+
+// ---------- horse cart (မြင်းလှည်း) ----------
+// Pony in shafts ahead, two-wheeled cart with a bamboo hoop canopy behind, driver up front.
+// Centred on the origin (horse nose ~ +2.4, cart tail ~ -2.0), facing +Z.
+// update(phase, wheelAng, gait): trot (diagonal leg pairs) scaled by gait 0..1, wheels roll.
+export function makeHorseCart(T) {
+  const g = new THREE.Group();
+  const coat = std(0x7a4a2a, { roughness: 0.7 }), dark = std(0x2b1d14, { roughness: 0.8 }), hoof = std(0x1c1714, { roughness: 0.6 });
+  const wood = std(0xffffff, { map: T.wood, roughness: 0.8 }), cane = std(0xffffff, { map: T.bamboo, roughness: 0.9, side: THREE.DoubleSide });
+  const red = std(0x9a2a24, { roughness: 0.6 });
+
+  // horse
+  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.27, 0.85, 6, 12), coat); body.rotation.x = Math.PI / 2; body.position.set(0, 1.18, 1.35); body.castShadow = true; g.add(body);
+  g.add(tube([0, 1.3, 1.78], [0, 1.72, 2.05], 0.13, coat));                                     // neck
+  const head = new THREE.Mesh(new THREE.CapsuleGeometry(0.1, 0.36, 4, 10), coat); setTube(head, [0, 1.78, 2.06], [0, 1.58, 2.42], 1); head.castShadow = true; g.add(head);
+  for (const s of [-1, 1]) g.add(tube([s * 0.06, 1.86, 2.04], [s * 0.07, 1.98, 2.0], 0.025, coat));   // ears
+  g.add(box(0.05, 0.42, 0.34, dark, 0, 1.72, 1.86));                                            // mane
+  g.add(tube([0, 1.25, 0.86], [0, 0.78, 0.72], 0.05, dark));                                    // tail
+  g.add(box(0.62, 0.06, 0.34, red, 0, 1.46, 1.55), box(0.58, 0.32, 0.05, red, 0, 1.3, 1.82));   // saddle pad, collar
+  const legs = [[0.13, 1.68, 0], [-0.13, 1.68, Math.PI], [0.13, 1.02, Math.PI], [-0.13, 1.02, 0]].map(([x, z, off]) => {
+    const piv = new THREE.Group(); piv.position.set(x, 1.05, z);
+    piv.add(tube([0, 0, 0], [0, -0.5, 0.02], 0.055, coat), tube([0, -0.5, 0.02], [0, -0.96, 0], 0.04, coat), box(0.09, 0.07, 0.11, hoof, 0, -0.98, 0.01));
+    g.add(piv); return { piv, off };
+  });
+
+  // shafts and cart
+  for (const s of [-1, 1]) g.add(tube([s * 0.42, 0.95, 0.1], [s * 0.3, 1.2, 1.75], 0.03, wood));
+  g.add(box(1.3, 0.08, 1.9, wood, 0, 0.88, -0.95), box(1.3, 0.06, 0.08, wood, 0, 0.94, 0.0));
+  for (const s of [-1, 1]) g.add(box(0.05, 0.28, 1.9, wood, s * 0.63, 1.04, -0.95));
+  const hood = new THREE.Mesh(new THREE.CylinderGeometry(0.66, 0.66, 1.6, 14, 1, true, -Math.PI / 2, Math.PI), cane);
+  // half-cylinder rotated so its open side faces down: a hooped roof over the bed
+  hood.rotation.x = -Math.PI / 2; hood.position.set(0, 1.18, -1.1); hood.castShadow = true; g.add(hood);
+  for (const z of [-1.9, -0.3]) { const hoop = new THREE.Mesh(new THREE.TorusGeometry(0.67, 0.025, 6, 16, Math.PI), wood); hoop.position.set(0, 1.18, z); g.add(hoop); }
+  g.add(box(1.1, 0.1, 0.5, red, 0, 0.97, -0.05));                                              // driver's bench cushion
+  const wheels = [-1, 1].map(s => {
+    const w = new THREE.Group(); w.position.set(s * 0.8, 0.62, -0.85);
+    const rim = new THREE.Mesh(new THREE.TorusGeometry(0.58, 0.045, 6, 24), wood); rim.rotation.y = Math.PI / 2; rim.castShadow = true; w.add(rim);
+    for (let i = 0; i < 6; i++) { const sp = box(0.04, 1.12, 0.05, wood, 0, 0, 0); sp.rotation.x = i * Math.PI / 6; w.add(sp); }
+    const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, 0.16, 10), dark); hub.rotation.z = Math.PI / 2; w.add(hub);
+    g.add(w); return w;
+  });
+  g.add(tube([-0.8, 0.62, -0.85], [0.8, 0.62, -0.85], 0.035, dark));                            // axle
+  rider(T, g, 1.05, 0.0, 0.1, null);
+
+  const update = (phase, wheelAng, gait) => {
+    for (const w of wheels) w.rotation.x = wheelAng;
+    for (const l of legs) l.piv.rotation.x = Math.sin(phase * 2.2 + l.off) * 0.45 * gait;
+  };
+  bake(g, [...wheels, ...legs.map(l => l.piv)]);
+  return { group: g, wheels, update };
+}

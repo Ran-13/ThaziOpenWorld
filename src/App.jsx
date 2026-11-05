@@ -2,8 +2,21 @@ import React, { useEffect, useRef, useState } from 'react';
 import { createGame } from './engine/game.js';
 
 const my = s => String(s).replace(/[0-9]/g, d => '၀၁၂၃၄၅၆၇၈၉'[d]);
-const card = { background: '#fff8ec', borderRadius: 16, boxShadow: '0 4px 0 rgba(43,42,51,.18)' };
-const btn = { border: 'none', fontFamily: 'inherit', fontWeight: 700, cursor: 'pointer' };
+// City-kit theme: the Kenney suburban palette (slate trim, roof green, sign yellow, white siding)
+// with chunky Kenney-style bottom edges.
+const C = {
+  panel: 'rgba(58,61,74,.92)', edge: '#25272f', text: '#f5f5f9', sub: '#b9bccf',
+  green: '#53be84', greenEdge: '#2f8f63', yellow: '#f7b733', yellowEdge: '#c58a14',
+  red: '#d9534f', redEdge: '#9e3431', white: '#e6e6ef', whiteEdge: '#9a9db3',
+};
+// Rideable vehicles: HUD name and a 24-unit line icon (stroke = currentColor).
+const RIDES = {
+  bike: { name: 'စက်ဘီး', horn: false, icon: <><circle cx="6" cy="16" r="3.5" /><circle cx="18" cy="16" r="3.5" /><path d="M6 16l4-7h5l3 7M10 9l-1.5-3H7M15 9l1-3h2" /></> },
+  moto: { name: 'ဆိုင်ကယ်', horn: true, icon: <><circle cx="5.5" cy="16" r="3" /><circle cx="18.5" cy="16" r="3" /><path d="M5.5 16h6l3-5h3l1 5M14.5 11L13 7h3M9 11h5" /></> },
+  car: { name: 'ကား', horn: true, icon: <><path d="M3 15v-3l2-4h11l3 4h2v3z" /><circle cx="7.5" cy="16" r="2" /><circle cx="17" cy="16" r="2" /><path d="M7 8l-1 4h12" /></> },
+  cart: { name: 'မြင်းလှည်း', horn: false, icon: <><circle cx="8" cy="16" r="4" /><path d="M4 11h9a5 5 0 0 0-9 0zM13 13l5-1 1-4 2 1-1 3v5M18 12v5" /></> },
+};
+const btn = { border: 'none', fontFamily: 'inherit', fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' };
 
 const isMobile = typeof matchMedia !== 'undefined' && matchMedia('(pointer: coarse)').matches;
 const OPTIONS = {
@@ -82,92 +95,117 @@ export default function App() {
   const m = hud.mission, ready = !!hud.ready;
   const pct = ready ? 1 : Math.max(0, Math.min(1, hud.progress ?? 0));
 
+  // One scale for the whole HUD from the game area (iOS Safari's toolbars can leave a landscape
+  // phone ~215 px tall). Text never drops below 11 px and touch targets never below 40 px.
+  const GW = (rotate ? vp.h : vp.w) || 1280, GH = (rotate ? vp.w : vp.h) || 720;
+  const k = Math.max(0.5, Math.min(1.1, GW / 900, (GH - 20) / 300));
+  const z = v => Math.round(v * k), f = v => Math.max(11, Math.round(v * k)), tap = v => Math.max(40, z(v));
+  const M = Math.max(8, z(14));                                   // edge margin
+  const inset = side => `calc(env(safe-area-inset-${side}) + ${M}px)`;
+  const panel = { background: C.panel, color: C.text, borderRadius: z(12), boxShadow: `0 ${Math.max(2, z(4))}px 0 ${C.edge}` };
+  const chunky = (bg, edge, r) => ({ ...btn, background: bg, borderRadius: r, boxShadow: `0 ${Math.max(3, z(5))}px 0 ${edge}`, color: C.text });
+  const mapSize = Math.max(84, z(124)), joySize = Math.max(96, z(140)), bell = Math.max(52, z(84));
+  const missionW = tap(104), camW = tap(92), rideW = tap(104), btnH = tap(48), gap = Math.max(6, z(10));
+  const rightW = bell + missionW + camW + rideW + 3 * gap;        // bottom-right button row
+  const ride = RIDES[hud.ride] || RIDES.bike;
+  // mission banner sits under the status bar; a toast stacks under the banner when both show
+  const bannerTop = M + z(48) + gap, bannerH = Math.round(f(14) * 1.45 + f(12) * 1.45 + 2 * z(6)) + 2;
+  const divider = <span style={{ width: 1, alignSelf: 'stretch', background: 'rgba(255,255,255,.14)' }} />;
+
   return (
-    <div style={{ position: 'fixed', ...(rotate && vp.w ? { top: 0, left: 0, width: vp.h, height: vp.w, transformOrigin: '0 0', transform: `rotate(90deg) translateY(${-vp.w}px)`, willChange: 'transform', backfaceVisibility: 'hidden' } : { inset: 0 }), fontFamily: "'Padauk', 'Noto Sans Myanmar', system-ui, sans-serif", color: '#2b2a33', touchAction: 'none', overflow: 'hidden', background: '#9fd3f0' }}>
+    <div style={{ position: 'fixed', ...(rotate && vp.w ? { top: 0, left: 0, width: vp.h, height: vp.w, transformOrigin: '0 0', transform: `rotate(90deg) translateY(${-vp.w}px)`, willChange: 'transform', backfaceVisibility: 'hidden' } : { inset: 0 }), fontFamily: "'Padauk', 'Noto Sans Myanmar', system-ui, sans-serif", color: C.text, touchAction: 'none', overflow: 'hidden', background: '#9fd3f0' }}>
       <div ref={stage} style={{ position: 'absolute', inset: 0 }} />
 
-      <div style={{ position: 'absolute', top: 'calc(env(safe-area-inset-top) + 12px)', left: 12, display: 'flex', flexDirection: 'column', gap: 8, pointerEvents: 'none' }}>
-        <div style={{ ...card, padding: '8px 14px', minWidth: 128 }}>
-          <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-            <span style={{ fontSize: 24, fontWeight: 700, lineHeight: 1.2 }}>{my(`${h12}:${String(Mi).padStart(2, '0')}`)}</span>
-            <span style={{ fontSize: 14, color: '#6b5a4a' }}>{period}</span>
-          </div>
-          <div style={{ fontSize: 14, color: '#6b5a4a', lineHeight: 1.5 }}>{my(hud.speed ?? 0)} ကီလိုမီတာ/နာရီ</div>
+      {/* top-left: one status bar (clock, speed, money, flowers) so it costs a single row of height */}
+      <div style={{ ...panel, position: 'absolute', top: inset('top'), left: inset('left'), display: 'flex', alignItems: 'center', gap: z(10), padding: `${z(6)}px ${z(12)}px`, pointerEvents: 'none', maxWidth: `calc(100% - ${mapSize + 3 * M}px)` }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: z(5), whiteSpace: 'nowrap' }}>
+          <span style={{ fontSize: f(22), fontWeight: 700, lineHeight: 1.2 }}>{my(`${h12}:${String(Mi).padStart(2, '0')}`)}</span>
+          <span style={{ fontSize: f(13), color: C.sub }}>{period}</span>
         </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <div style={{ ...card, background: '#f2b233', borderRadius: 14, padding: '6px 12px', fontSize: 15, fontWeight: 700, lineHeight: 1.5 }}>{my((hud.money ?? 0).toLocaleString())} ကျပ်</div>
-          <div style={{ ...card, borderRadius: 14, padding: '6px 12px', fontSize: 15, fontWeight: 700, lineHeight: 1.5, display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span style={{ width: 10, height: 10, borderRadius: '50%', background: '#f7c21b', boxShadow: '0 0 0 2px #e08a00' }} />{my(hud.flowers ?? 0)}/{my(hud.flowersTotal ?? 0)}
-          </div>
+        {divider}
+        <div style={{ fontSize: f(14), lineHeight: 1.4, whiteSpace: 'nowrap' }}><b>{my(hud.speed ?? 0)}</b> <span style={{ color: C.sub, fontSize: f(12) }}>ကမ/နာရီ</span></div>
+        {divider}
+        <div style={{ fontSize: f(14), fontWeight: 700, lineHeight: 1.4, whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: z(5) }}>
+          <span style={{ width: f(12), height: f(12), borderRadius: '50%', background: C.yellow, boxShadow: `inset 0 -2px 0 ${C.yellowEdge}` }} />{my((hud.money ?? 0).toLocaleString())} <span style={{ color: C.sub, fontWeight: 400, fontSize: f(12) }}>ကျပ်</span>
+        </div>
+        {divider}
+        <div style={{ fontSize: f(14), fontWeight: 700, lineHeight: 1.4, whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: z(5) }}>
+          <span style={{ width: f(10), height: f(10), borderRadius: '50%', background: '#f7c21b', boxShadow: '0 0 0 2px #e08a00' }} />{my(hud.flowers ?? 0)}/{my(hud.flowersTotal ?? 0)}
         </div>
       </div>
 
-      <div style={{ position: 'absolute', top: 'calc(env(safe-area-inset-top) + 12px)', right: 12, width: 132, height: 132, borderRadius: '50%', background: '#5e4029', boxShadow: '0 4px 0 rgba(43,42,51,.25), 0 0 0 5px #fff8ec', overflow: 'hidden', pointerEvents: 'none' }}>
-        <canvas ref={map} style={{ width: 132, height: 132, display: 'block' }} />
+      <div style={{ position: 'absolute', top: inset('top'), right: inset('right'), width: mapSize, height: mapSize, borderRadius: '50%', overflow: 'hidden', pointerEvents: 'none', border: `${Math.max(3, z(5))}px solid ${C.panel}`, boxShadow: `0 ${Math.max(2, z(4))}px 0 ${C.edge}`, background: '#3a3d4a', boxSizing: 'border-box' }}>
+        <canvas ref={map} style={{ width: '100%', height: '100%', display: 'block' }} />
       </div>
 
+      {/* mission: top centre, clear of the status bar row and the minimap */}
       {m && (
-        <div style={{ position: 'absolute', top: 'calc(env(safe-area-inset-top) + 160px)', left: 12, right: 12, display: 'flex', justifyContent: 'center', pointerEvents: 'none' }}>
-          <div style={{ ...card, padding: '8px 14px', maxWidth: 420, display: 'flex', gap: 10, alignItems: 'center' }}>
-            <span style={{ width: 14, height: 14, borderRadius: '50%', background: m.stage === 'pickup' ? '#2f8f83' : '#d9603b', flex: 'none' }} />
+        <div style={{ position: 'absolute', top: `calc(env(safe-area-inset-top) + ${bannerTop}px)`, left: mapSize + 2 * M, right: mapSize + 2 * M, display: 'flex', justifyContent: 'center', pointerEvents: 'none' }}>
+          <div style={{ ...panel, padding: `${z(6)}px ${z(12)}px`, maxWidth: '100%', display: 'flex', gap: z(10), alignItems: 'center', borderLeft: `${z(5)}px solid ${m.stage === 'pickup' ? C.green : C.red}` }}>
             <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-              <div style={{ fontSize: 15, fontWeight: 700, lineHeight: 1.5 }}>{m.stage === 'pickup' ? `${m.item} ယူရန် — ${m.label}` : `${m.item} ပို့ရန် — ${m.label}`}</div>
-              <div style={{ fontSize: 13, color: '#6b5a4a', lineHeight: 1.5 }}>{my(m.dist)} မီတာ{m.left != null ? ` · ဆုကြေးအချိန် ${my(m.left)} စက္ကန့်` : ''}</div>
+              <div style={{ fontSize: f(14), fontWeight: 700, lineHeight: 1.45, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.stage === 'pickup' ? `${m.item} ယူရန် — ${m.label}` : `${m.item} ပို့ရန် — ${m.label}`}</div>
+              <div style={{ fontSize: f(12), color: C.sub, lineHeight: 1.45 }}>{my(m.dist)} မီတာ{m.left != null ? ` · ဆုကြေးအချိန် ${my(m.left)} စက္ကန့်` : ''}</div>
             </div>
           </div>
         </div>
       )}
 
       {toast && (
-        <div style={{ position: 'absolute', top: '42%', left: 16, right: 16, display: 'flex', justifyContent: 'center', pointerEvents: 'none' }}>
-          <div style={{ background: '#2b2a33', color: '#fff8ec', borderRadius: 999, padding: '8px 18px', fontSize: 16, fontWeight: 700, lineHeight: 1.6, textAlign: 'center' }}>{toast}</div>
+        <div style={{ position: 'absolute', top: m ? `calc(env(safe-area-inset-top) + ${bannerTop + bannerH + gap}px)` : '40%', left: joySize + 2 * M, right: joySize + 2 * M, display: 'flex', justifyContent: 'center', pointerEvents: 'none' }}>
+          <div style={{ ...panel, borderRadius: 999, padding: `${z(7)}px ${z(16)}px`, fontSize: f(15), fontWeight: 700, lineHeight: 1.5, textAlign: 'center' }}>{toast}</div>
         </div>
       )}
 
+      {/* place name: bottom centre, between the joystick and the button row */}
       {started && hud.popup && (
-        <div style={{ position: 'absolute', bottom: 'calc(env(safe-area-inset-bottom) + 182px)', left: 16, right: 16, display: 'flex', justifyContent: 'center', pointerEvents: 'none' }}>
-          <div style={{ ...card, borderRadius: 18, padding: '10px 16px', maxWidth: 360, display: 'flex', flexDirection: 'column', gap: 2, border: '3px solid #2f8f83' }}>
-            <div style={{ fontSize: 12, fontWeight: 700, color: '#2f8f83', lineHeight: 1.5 }}>{hud.popup.kind}</div>
-            <div style={{ fontSize: 19, fontWeight: 700, lineHeight: 1.4 }}>{hud.popup.name}</div>
-            {hud.popup.en && <div style={{ fontSize: 13, color: '#6b5a4a', lineHeight: 1.4 }}>{hud.popup.en}</div>}
+        <div style={{ position: 'absolute', bottom: `calc(env(safe-area-inset-bottom) + ${M + z(14)}px)`, left: joySize + 2 * M, right: rightW + 2 * M, display: 'flex', justifyContent: 'center', pointerEvents: 'none' }}>
+          <div style={{ ...panel, padding: `${z(6)}px ${z(12)}px`, maxWidth: '100%', display: 'flex', flexDirection: 'column', borderTop: `${z(4)}px solid ${C.green}` }}>
+            <div style={{ fontSize: f(11), fontWeight: 700, color: C.green, lineHeight: 1.4 }}>{hud.popup.kind}</div>
+            <div style={{ fontSize: f(16), fontWeight: 700, lineHeight: 1.35, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{hud.popup.name}</div>
+            {hud.popup.en && <div style={{ fontSize: f(12), color: C.sub, lineHeight: 1.35 }}>{hud.popup.en}</div>}
           </div>
         </div>
       )}
 
-      <div ref={joy} style={{ position: 'absolute', left: 'calc(env(safe-area-inset-left) + 22px)', bottom: 'calc(env(safe-area-inset-bottom) + 34px)', width: 136, height: 136, borderRadius: '50%', background: 'rgba(255,248,236,.55)', boxShadow: 'inset 0 0 0 4px rgba(255,248,236,.9), 0 4px 0 rgba(43,42,51,.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', touchAction: 'none' }}>
-        <div ref={knob} style={{ width: 60, height: 60, borderRadius: '50%', background: '#d9603b', boxShadow: '0 4px 0 #a8432a', pointerEvents: 'none' }} />
+      <div ref={joy} style={{ position: 'absolute', left: inset('left'), bottom: inset('bottom'), width: joySize, height: joySize, borderRadius: '50%', background: 'rgba(58,61,74,.42)', boxShadow: `inset 0 0 0 ${Math.max(2, z(3))}px rgba(245,245,249,.75)`, display: 'flex', alignItems: 'center', justifyContent: 'center', touchAction: 'none' }}>
+        <div ref={knob} style={{ width: Math.round(joySize * 0.44), height: Math.round(joySize * 0.44), borderRadius: '50%', background: C.white, boxShadow: `0 ${Math.max(3, z(5))}px 0 ${C.whiteEdge}`, pointerEvents: 'none' }} />
       </div>
 
-      <div style={{ position: 'absolute', right: 'calc(env(safe-area-inset-right) + 18px)', bottom: 'calc(env(safe-area-inset-bottom) + 34px)', display: 'grid', gridTemplateColumns: 'auto auto', gap: 12, alignItems: 'end' }}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          <button onClick={() => game.current?.toggleMission()} style={{ ...btn, minWidth: 78, height: 52, borderRadius: 16, background: m ? '#6b5a4a' : '#2f8f83', color: '#fff8ec', fontSize: 15, boxShadow: '0 4px 0 rgba(43,42,51,.3)', padding: '0 12px' }}>{m ? 'ပယ်ဖျက်' : 'အလုပ်ယူ'}</button>
-          <button onClick={() => game.current?.cycleCamera()} style={{ ...btn, minWidth: 78, height: 48, borderRadius: 16, background: '#fff8ec', color: '#2b2a33', fontSize: 15, boxShadow: '0 4px 0 rgba(43,42,51,.25)', padding: '0 12px' }}>ကင်မရာ</button>
-        </div>
-        <button onClick={() => game.current?.bell()} aria-label="ဘဲလ်" style={{ ...btn, width: 88, height: 88, borderRadius: '50%', background: '#f2b233', boxShadow: '0 5px 0 #c58a14', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: '#2b2a33' }}>
-          <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#2b2a33" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15z" /><path d="M10 20.5a2 2 0 0 0 4 0" /></svg>
-          <span style={{ fontSize: 13, lineHeight: 1.3 }}>ဘဲလ်</span>
+      <div style={{ position: 'absolute', right: inset('right'), bottom: inset('bottom'), display: 'flex', gap, alignItems: 'flex-end' }}>
+        <button onClick={() => game.current?.cycleRide()} aria-label="ယာဉ်ပြောင်း" style={{ ...chunky(C.panel, C.edge, z(12)), width: rideW, height: btnH, fontSize: f(14), gap: z(5), whiteSpace: 'nowrap' }}>
+          <svg width={f(20)} height={f(20)} viewBox="0 0 24 24" fill="none" stroke={C.yellow} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{ride.icon}</svg>{ride.name}
+        </button>
+        <button onClick={() => game.current?.cycleCamera()} style={{ ...chunky(C.panel, C.edge, z(12)), width: camW, height: btnH, fontSize: f(14), gap: z(5) }}>
+          <svg width={f(16)} height={f(16)} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 8h3l2-3h6l2 3h3v11H4z" /><circle cx="12" cy="13" r="3.5" /></svg>ကင်မရာ
+        </button>
+        <button onClick={() => game.current?.toggleMission()} style={{ ...chunky(m ? C.red : C.green, m ? C.redEdge : C.greenEdge, z(12)), width: missionW, height: btnH, fontSize: f(14) }}>{m ? 'ပယ်ဖျက်' : 'အလုပ်ယူ'}</button>
+        <button onClick={() => game.current?.bell()} aria-label={ride.horn ? 'ဟွန်း' : 'ဘဲလ်'} style={{ ...chunky(C.yellow, C.yellowEdge, '50%'), width: bell, height: bell, flexDirection: 'column', color: '#2b2d38' }}>
+          <svg width={Math.round(bell * 0.36)} height={Math.round(bell * 0.36)} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+            {ride.horn ? <path d="M4 10v4h3l6 4V6L7 10zM16 9a4 4 0 0 1 0 6M18.5 6.5a7.5 7.5 0 0 1 0 11" /> : <><path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15z" /><path d="M10 20.5a2 2 0 0 0 4 0" /></>}
+          </svg>
+          {bell >= 64 && <span style={{ fontSize: f(12), lineHeight: 1.2 }}>{ride.horn ? 'ဟွန်း' : 'ဘဲလ်'}</span>}
         </button>
       </div>
 
-      <div style={{ position: 'absolute', bottom: 'calc(env(safe-area-inset-bottom) + 6px)', left: 0, right: 0, textAlign: 'center', fontSize: 10, color: 'rgba(255,248,236,.9)', textShadow: '0 1px 2px rgba(0,0,0,.5)', pointerEvents: 'none', fontFamily: 'system-ui, sans-serif' }}>© OpenStreetMap contributors{hud.sat ? ' · Imagery © Esri, Maxar, Earthstar Geographics' : ''}</div>
+      <div style={{ position: 'absolute', bottom: 'calc(env(safe-area-inset-bottom) + 2px)', left: 0, right: 0, textAlign: 'center', fontSize: 9, color: 'rgba(245,245,249,.85)', textShadow: '0 1px 2px rgba(0,0,0,.5)', pointerEvents: 'none', fontFamily: 'system-ui, sans-serif' }}>© OpenStreetMap contributors{hud.sat ? ' · Imagery © Esri, Maxar, Earthstar Geographics' : ''}</div>
 
       {!started && (
-        <div style={{ position: 'absolute', inset: 0, background: 'rgba(43,42,51,.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
-          <div style={{ background: '#fff8ec', borderRadius: 26, padding: '30px 26px 20px', maxWidth: 340, width: '100%', boxShadow: '0 8px 0 rgba(0,0,0,.25)', display: 'flex', flexDirection: 'column', gap: 18, textAlign: 'center' }}>
-            <div style={{ fontSize: 46, fontWeight: 700, lineHeight: 1.25 }}>သာစည်</div>
+        <div style={{ position: 'absolute', inset: 0, background: 'rgba(37,39,47,.55)', display: 'flex', padding: M, overflowY: 'auto' }}>
+          <div style={{ ...panel, margin: 'auto', borderRadius: z(20), padding: `${z(22)}px ${z(22)}px ${z(16)}px`, maxWidth: 340, width: '100%', boxShadow: `0 ${z(6)}px 0 ${C.edge}`, display: 'flex', flexDirection: 'column', gap: z(14), textAlign: 'center' }}>
+            <div style={{ fontSize: Math.max(26, z(44)), fontWeight: 700, lineHeight: 1.25 }}>သာစည်</div>
             <div>
-              <div style={{ height: 10, borderRadius: 999, background: '#e8dfcd', overflow: 'hidden' }}>
-                <div style={{ height: '100%', width: `${Math.round(pct * 100)}%`, background: '#d9603b', borderRadius: 999, transition: 'width .35s ease' }} />
+              <div style={{ height: Math.max(6, z(10)), borderRadius: 999, background: C.edge, overflow: 'hidden' }}>
+                <div style={{ height: '100%', width: `${Math.round(pct * 100)}%`, background: C.green, borderRadius: 999, transition: 'width .35s ease' }} />
               </div>
-              <div style={{ fontSize: 13, color: '#8a7d70', marginTop: 8, lineHeight: 1.5 }}>{my(Math.round(pct * 100))}%</div>
+              <div style={{ fontSize: f(13), color: C.sub, marginTop: z(6), lineHeight: 1.5 }}>{my(Math.round(pct * 100))}%</div>
             </div>
-            <button disabled={!ready} onClick={() => { game.current?.start(); setStarted(true); }} style={{ ...btn, height: 54, borderRadius: 18, background: ready ? '#d9603b' : '#b8aea3', color: '#fff8ec', fontSize: 20, boxShadow: '0 5px 0 rgba(43,42,51,.3)' }}>{ready ? 'စတင်မည်' : 'ခဏစောင့်ပါ…'}</button>
-            {diag && (
-              <div style={{ fontSize: 11, color: '#2b2a33', background: '#ffe9b0', borderRadius: 8, padding: '6px 8px', font: '11px/1.5 monospace', textAlign: 'left' }}>
+            <button disabled={!ready} onClick={() => { game.current?.start(); setStarted(true); }} style={{ ...chunky(ready ? C.green : '#5b6070', ready ? C.greenEdge : C.edge, z(14)), height: tap(52), fontSize: f(19), flex: 'none' }}>{ready ? 'စတင်မည်' : 'ခဏစောင့်ပါ…'}</button>
+            {diag && GH >= 420 && (
+              <div style={{ color: C.sub, background: C.edge, borderRadius: 8, padding: '6px 8px', font: '11px/1.5 monospace', textAlign: 'left' }}>
                 dpr {diag.dpr} · ratio {diag.ratio} · fps {diag.fps}<br />buffer {diag.back}<br />css {diag.css} · rot {diag.rot}{diag.gi ? <>{'\n'}<br />calls {diag.gi.calls} · tris {(diag.gi.tris / 1e6).toFixed(2)}M</> : null}
               </div>
             )}
-            <div style={{ fontSize: 10, color: '#a2968a', lineHeight: 1.5 }}>မော်ဒယ်များ — Kenney, Quaternius (CC0) · ဆိုင်ကယ် Vladimir Ilic (CC-BY)</div>
+            <div style={{ fontSize: 10, color: C.sub, lineHeight: 1.5 }}>မော်ဒယ်များ — Kenney, Quaternius (CC0) · ဆိုင်ကယ် Vladimir Ilic (CC-BY)</div>
           </div>
         </div>
       )}

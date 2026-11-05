@@ -64,10 +64,10 @@ export function makePlots(buildings, lines) {
       const px = s[0] + dx * t, pz = s[1] + dz * t, dd = Math.hypot(c[0] - px, c[1] - pz);
       if (dd < 0.01 || segDist(c[0], c[1], s[0], s[1], s[2], s[3]) > YARD + s[4] / 2 + 30) continue;
       const nx = (c[0] - px) / dd, nz = (c[1] - pz) / dd;   // from the road towards the house
-      let keep = s[4] / 2 + ROAD_GAP;
+      // stop at the carriageway edge, or at the house front where OSM draws the house up to (or
+      // onto) the road; game.js also drops any fence piece that still lands on a road surface
       const own = -extent(pts, [px, pz], -nx, -nz);          // closest footprint point to the road
-      if (own <= 0.2) continue;                               // footprint already on the road (OSM noise)
-      keep = Math.min(keep, own - 0.2);
+      const keep = Math.min(s[4] / 2 + ROAD_GAP, own - 0.2);
       poly = clip(poly, -nx, -nz, -(nx * px + nz * pz + keep), s[5]);
       if (poly.p.length < 3) return null;
     }

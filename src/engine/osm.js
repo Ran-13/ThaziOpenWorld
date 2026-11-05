@@ -254,7 +254,17 @@ export function parse(data) {
       W.buildings.push({ pts: ring, tags: t });
       continue;
     }
-    if (t.highway) { const bt = baseType(t.highway); if (RW[bt]) { const tw = parseFloat(t.width), ln = parseInt(t.lanes); W.roads.push({ pts, nodes: el.nodes, tags: t, type: bt, w: Math.max(1.4, Math.min(16, tw > 0 ? tw : ln > 0 && RW[bt] > 4 ? ln * 3.2 : RW[bt])), name }); } continue; }
+    if (t.highway) {
+      const bt = baseType(t.highway); if (!RW[bt]) continue;
+      // A divided road is mapped as two one-way ways, one per direction: each is only its own
+      // carriageway (2 lanes on a main road), not the full road width, or the pair overlaps.
+      const tw = parseFloat(t.width), oneway = t.oneway === 'yes' || t.oneway === '1' || t.oneway === '-1';
+      // the AH2/NH27 trunk through Thazi is four lanes; OSM has no lanes tag on it
+      const lanes = parseInt(t.lanes) > 0 ? parseInt(t.lanes) : oneway && RW[bt] > 4 ? (MAJOR.has(bt) ? 2 : 1) : (bt === 'trunk' || bt === 'motorway') ? 4 : 0;
+      const w = tw > 0 ? tw : lanes && RW[bt] > 4 ? lanes * 3.3 : RW[bt];
+      W.roads.push({ pts, nodes: el.nodes, tags: t, type: bt, w: Math.max(1.4, Math.min(16, w)), lanes: lanes || 2, oneway, name });
+      continue;
+    }
     if (['rail', 'siding', 'narrow_gauge', 'light_rail'].includes(t.railway)) { W.rails.push({ pts }); continue; }
     if (t.waterway && !closed) { W.waterLines.push({ pts, w: t.waterway === 'river' ? 14 : t.waterway === 'canal' ? 7 : 3 }); continue; }
     if (!closed) continue;

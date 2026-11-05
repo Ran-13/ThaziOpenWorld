@@ -1,7 +1,7 @@
 import * as THREE from './three.js';
 import * as O from './osm.js';
 import { makeTextures } from './textures.js';
-import { std, tube, bake, makeBike, makePagoda, makePagodaMats, makeStation, makeTrainCar, makeVehicle, vehicleLights, makePerson } from './models.js';
+import { std, tube, bake, makeBike, makePagoda, makePagodaMats, makeStation, makeTrainCar, makeVehicle, vehicleLights, makePerson, makeHorseCart } from './models.js';
 import { loadAssets, cloneAsset, instancedFromAsset } from './assets.js';
 import { createHomes } from './homes.js';
 import { makePlots } from './plots.js';
@@ -54,6 +54,7 @@ const SND = {
   pick() { [660, 990].forEach((f, i) => tone(f, i * 0.09, 0.3, 'triangle', 0.12)); },
   done() { [523, 659, 784, 1047].forEach((f, i) => tone(f, i * 0.09, 0.5, 'triangle', 0.12)); },
   bump() { tone(120, 0, 0.15, 'square', 0.06); },
+  horn() { tone(392, 0, 0.42, 'sawtooth', 0.07); tone(494, 0, 0.42, 'sawtooth', 0.06); },
 };
 
 export async function createGame(o) {
@@ -176,7 +177,7 @@ export async function createGame(o) {
   let stationPoi = W.pois.find(p => p.tags.railway === 'station');
   const railSegs = [];
   for (const r of W.rails) for (let i = 0; i < r.pts.length - 1; i++) { const c = clipSeg(r.pts[i][0], r.pts[i][1], r.pts[i + 1][0], r.pts[i + 1][1]); if (c) railSegs.push(c); }
-  // Rails get their own index rather than going into `obs`: blockedR() is built on blocked(),
+  // Rails get their own index rather than going into `obs`: poseBlocked() is built on blocked(),
   // so an obstacle here would stop the player ever crossing the tracks.
   const RAIL_HW = 6;                       // matches the station platform band (x 2.1 -> 7.1)
   const railG = new Grid(25);
@@ -253,20 +254,36 @@ export async function createGame(o) {
   const DRIVE_C = col('#4d515e'), PATH_C = col('#747990');
   const RK = new ChunkB(), MK = new ChunkB();
   const ordR = r => (MAJOR.has(r.type) ? 3 : DRIVE.has(r.type) ? 2 : 1);
-  // Road markings on paved streets: a dashed white centre line, and solid edge lines on streets
-  // 5 m and wider. Nodes shared by two or more ways are junctions; markings stop short of them so
+  // Road markings on paved streets, by lane count (see `lines` below). Nodes shared by two or more ways are junctions; markings stop short of them so
   // lines never run across a crossing street.
   const MARK_C = col('#eeeee4'), DASH = 3, GAP = 3, LINE_W = 0.14;
   const nodeUse = new Map();
   for (const r of W.roads) if (r.nodes) for (const n of new Set(r.nodes)) nodeUse.set(n, (nodeUse.get(n) || 0) + 1);
+  // The two one-way halves of a divided road share a ref/name; their markings may meet in the
+  // middle. Any other road's surface (a merging or crossing street) gets no paint from this one.
+  const pairKey = r => r.oneway && (r.tags.ref || r.name);
+  const onOtherRoad = (x, z, r) => {
+    for (const sg of segs.q(x, z)) {
+      const o = sg[6]; if (o === r || (pairKey(o) && pairKey(o) === pairKey(r))) continue;
+      if (segDist(x, z, sg[0], sg[1], sg[2], sg[3]) < sg[4] / 2 - 0.1) return true;
+    }
+    return false;
+  };
   // lay one marking strip at signed offset `off` from the centre-line of road r between global
-  // distances a..b along it; mitred offsets at real vertices keep solid lines unbroken at bends
+  // distances a..b along it; mitred offsets at real vertices keep solid lines unbroken at bends.
+  // Pieces are at most 2 m so the overlap test can trim a line where it meets another road.
   const markStrip = (r, mit, cumAt, y, off, a, b) => {
     for (let i = 0; i < r.pts.length - 1; i++) {
       const s0 = Math.max(a, cumAt[i]), s1 = Math.min(b, cumAt[i + 1]); if (s1 - s0 < 0.05) continue;
       const p = r.pts[i], q = r.pts[i + 1], L = cumAt[i + 1] - cumAt[i], ux = (q[0] - p[0]) / L, uz = (q[1] - p[1]) / L;
       const at = (d, o) => { const l = d - cumAt[i], m = l < 1e-4 ? mit[i] : L - l < 1e-4 ? mit[i + 1] : [-uz, ux]; return [p[0] + ux * l + m[0] * o, p[1] + uz * l + m[1] * o]; };
-      MK.quadUV(at(s0, off - LINE_W / 2), at(s1, off - LINE_W / 2), at(s1, off + LINE_W / 2), at(s0, off + LINE_W / 2), y, MARK_C, 0, 0);
+      const n = Math.ceil((s1 - s0) / 2);
+      for (let k = 0; k < n; k++) {
+        const d0 = s0 + (s1 - s0) * k / n, d1 = s0 + (s1 - s0) * (k + 1) / n, mid = at((d0 + d1) / 2, off);
+        // long highways run far past the map: paint only the part on the board
+        if (Math.abs(mid[0]) > BX || Math.abs(mid[1]) > BZ || onOtherRoad(mid[0], mid[1], r)) continue;
+        MK.quadUV(at(d0, off - LINE_W / 2), at(d1, off - LINE_W / 2), at(d1, off + LINE_W / 2), at(d0, off + LINE_W / 2), y, MARK_C, 0, 0);
+      }
     }
   };
   let wi = 0;
@@ -302,19 +319,29 @@ export async function createGame(o) {
       // junction caps
       RK.disc(c[0], c[1], r.w / 2, y - 0.002, rc); RK.disc(c[2], c[3], r.w / 2, y - 0.002, rc);
     }
-    if (!paved || t === 'service' || r.w < 4.5 || !r.nodes || r.pts.some(p => Math.abs(p[0]) > BX || Math.abs(p[1]) > BZ)) continue;
+    if (!paved || t === 'service' || r.w < 4.5 || !r.nodes) continue;
     const cumAt = [0]; for (let i = 1; i < r.pts.length; i++) cumAt.push(cumAt[i - 1] + Math.hypot(r.pts[i][0] - r.pts[i - 1][0], r.pts[i][1] - r.pts[i - 1][1]));
     const total = cumAt[cumAt.length - 1], clear = r.w / 2 + 2.5;
     // open stretches between junctions (and the way's own ends)
     const stops = [0, total]; r.nodes.forEach((n, i) => { if (nodeUse.get(n) > 1) stops.push(cumAt[i]); });
     stops.sort((a, b) => a - b);
+    // lines as [offset from centre-line, dashed]: solid edge lines; a one-way carriageway gets
+    // dashed lane dividers only; a two-way road a solid double centre line when it has 4+ lanes
+    // (plus dashed dividers), otherwise one dashed centre line
+    const hw = r.w / 2, lines = [];
+    if (r.w >= 5) lines.push([-(hw - 0.35), false], [hw - 0.35, false]);
+    if (r.oneway) for (let k = 1; k < r.lanes; k++) lines.push([-hw + k * r.w / r.lanes, true]);
+    else if (r.lanes >= 4) { lines.push([-0.12, false], [0.12, false]); for (let k = 1; k < r.lanes / 2; k++) lines.push([k * r.w / r.lanes, true], [-k * r.w / r.lanes, true]); }
+    else lines.push([0, true]);
     const my = y + 0.004;
     for (let k = 0; k < stops.length - 1; k++) {
       const a = stops[k] + clear, b = stops[k + 1] - clear; if (b - a < DASH) continue;
       // dashes centred in the stretch so both ends look the same
       const n = Math.floor((b - a + GAP) / (DASH + GAP)), start = a + (b - a - (n * (DASH + GAP) - GAP)) / 2;
-      for (let d = 0; d < n; d++) markStrip(r, mit, cumAt, my, 0, start + d * (DASH + GAP), start + d * (DASH + GAP) + DASH);
-      if (r.w >= 5) for (const side of [-1, 1]) markStrip(r, mit, cumAt, my, side * (r.w / 2 - 0.35), a, b);
+      for (const [off, dashed] of lines) {
+        if (!dashed) { markStrip(r, mit, cumAt, my, off, a, b); continue; }
+        for (let d = 0; d < n; d++) markStrip(r, mit, cumAt, my, off, start + d * (DASH + GAP), start + d * (DASH + GAP) + DASH);
+      }
     }
   }
   const sleepers = [], balC = col('#a99a88'), railC = col('#6b7078');
@@ -399,6 +426,19 @@ export async function createGame(o) {
   }
   if (homes) homes.build(scene, matCol(0x7a5a3c, { map: TX.wood, roughness: 0.85 }));
 
+  // Lay a fence from a to b, skipping any stretch that would stand on a road or footway: OSM
+  // footprints drawn over the road edge can still pull a plot onto it.
+  const onRoad = (x, z) => { for (const sg of segs.q(x, z)) if (segDist(x, z, sg[0], sg[1], sg[2], sg[3]) < sg[4] / 2 + 0.15) return true; return false; };
+  const fenceRun = (ax, az, bx, bz) => {
+    const n = Math.max(1, Math.ceil(Math.hypot(bx - ax, bz - az) / 0.8));
+    const P = k => [ax + (bx - ax) * k / n, az + (bz - az) * k / n];
+    let start = -1;
+    for (let k = 0; k <= n; k++) {
+      const ok = k < n && !onRoad(...P(k + 0.5));
+      if (ok && start < 0) start = k;
+      else if (!ok && start >= 0) { const p0 = P(start), p1 = P(k); fences.add(p0[0], p0[1], p1[0], p1[1]); start = -1; }
+    }
+  };
   plots.forEach((pl, i) => {
     if (!pl) return;
     // gate: middle of the longest street edge
@@ -408,10 +448,10 @@ export async function createGame(o) {
       // a fence shared with a neighbour is drawn once, by the lower index
       if (typeof l === 'number' && l < i && plots[l]) return;
       const a = pl.p[k], c = pl.p[(k + 1) % pl.p.length];
-      if (k !== gate) { fences.add(a[0], a[1], c[0], c[1]); return; }
+      if (k !== gate) { fenceRun(a[0], a[1], c[0], c[1]); return; }
       const L = Math.hypot(c[0] - a[0], c[1] - a[1]), t0 = 0.5 - 1.1 / L, t1 = 0.5 + 1.1 / L;
-      fences.add(a[0], a[1], a[0] + (c[0] - a[0]) * t0, a[1] + (c[1] - a[1]) * t0);
-      fences.add(a[0] + (c[0] - a[0]) * t1, a[1] + (c[1] - a[1]) * t1, c[0], c[1]);
+      fenceRun(a[0], a[1], a[0] + (c[0] - a[0]) * t0, a[1] + (c[1] - a[1]) * t0);
+      fenceRun(a[0] + (c[0] - a[0]) * t1, a[1] + (c[1] - a[1]) * t1, c[0], c[1]);
     });
   });
   fences.build(scene, 0xc3714e);
@@ -490,7 +530,7 @@ export async function createGame(o) {
   // ---------- street lamps ----------
   const lamps = [];
   const lampStep = mobile ? 56 : 36, lampCap = mobile ? 120 : 500;
-  for (const s of roadSegs) { const r = s[6]; if (!MAJOR.has(r.type) || lamps.length > lampCap) continue; const dx = s[2] - s[0], dz = s[3] - s[1], L = Math.hypot(dx, dz); for (let d = 10; d < L; d += lampStep) { const off = r.w / 2 + 1.0, x = s[0] + dx * d / L - dz / L * off, z = s[1] + dz * d / L + dx / L * off; if (!blocked(x, z) && railClear(x, z) > 3) lamps.push([x, 0, z, Math.atan2(-dz, dx) + Math.PI / 2]); } }
+  for (const s of roadSegs) { const r = s[6]; if (!MAJOR.has(r.type) || lamps.length > lampCap) continue; const dx = s[2] - s[0], dz = s[3] - s[1], L = Math.hypot(dx, dz); for (let d = 10; d < L; d += lampStep) { const off = r.w / 2 + 1.0, x = s[0] + dx * d / L - dz / L * off, z = s[1] + dz * d / L + dx / L * off; if (!blocked(x, z) && railClear(x, z) > 3 && roadClear(x, z) > 0.3) lamps.push([x, 0, z, Math.atan2(-dz, dx) + Math.PI / 2]); } }
   const bulbMat = new THREE.MeshBasicMaterial({ color: 0xdddddd });
   if (lamps.length) {
     const pole = new THREE.CylinderGeometry(0.06, 0.1, 5, mobile ? 5 : 6); pole.translate(0, 2.5, 0);
@@ -536,11 +576,41 @@ export async function createGame(o) {
   const P = { x: 0, z: 0, h: 0, v: 0, steer: 0, phase: 0, wheel: 0 };
   const startRef = stationPoi || { x: 0, z: 0 };
   if (carNodes.length) { let bestN = carNodes[0], bd = 1e9; for (const n of carNodes) { const d = Math.hypot(n.x - startRef.x, n.z - startRef.z); if (d < bd) { bd = d; bestN = n; } } P.x = bestN.x; P.z = bestN.z; const nb = bestN.adj[0]; P.h = Math.atan2(nb.x - bestN.x, nb.z - bestN.z); }
-  const bike = new THREE.Group(); bike.rotation.order = 'YXZ';
+  // Rideable vehicles. half = collision half-width / half-length (m); cam scales the chase camera;
+  // lean is how far the body banks in a turn; wheelR drives wheel spin; head/pkg place the
+  // headlight and the delivery parcel; sound is what the bell button plays.
+  const RIDES = {
+    bike: { name: 'စက်ဘီး', vmax: 9, acc: 4.2, brake: 10, rev: 2.2, turn: 1.9, half: [0.35, 0.6], cam: 1, lean: 0.3, wheelR: 0.34, head: [0, 1.0, 0.7], pkg: [0, 1.0, 0.66], sound: 'bell' },
+    moto: { name: 'ဆိုင်ကယ်', vmax: 17, acc: 7, brake: 12, rev: 1.5, turn: 1.7, half: [0.38, 0.95], cam: 1.15, lean: 0.35, wheelR: 0.34, head: [0, 0.95, 0.7], pkg: [0, 1.0, -0.62], sound: 'horn' },
+    car: { name: 'ကား', vmax: 19, acc: 6, brake: 14, rev: 4, turn: 1.25, half: [0.95, 2.1], cam: 1.9, lean: 0.04, wheelR: 0.34, head: [0, 0.85, 2.2], pkg: [0, 1.95, -0.5], sound: 'horn' },
+    cart: { name: 'မြင်းလှည်း', vmax: 5.5, acc: 2, brake: 6, rev: 0.8, turn: 1.1, half: [0.85, 2.3], cam: 2.4, lean: 0.02, wheelR: 0.6, head: [0, 1.6, 2.5], pkg: [0, 1.05, -1.5], sound: 'bell' },
+  };
+  const RIDE_ORDER = ['bike', 'moto', 'car', 'cart'];
+  const bike = new THREE.Group(); bike.rotation.order = 'YXZ';   // the player root, whatever is ridden
   const BK = makeBike(TX);
-  if (assets.bike) { bike.add(cloneAsset(assets.bike).object); bike.add(BK.pkg); } else bike.add(BK.group);
+  BK.pkg.visible = false;
+  const buildRide = id => {
+    if (id === 'bike') { const g = new THREE.Group(); g.add(assets.bike ? cloneAsset(assets.bike).object : BK.group); return { g, wheels: [], update: (ph, w) => BK.update(ph, w) }; }
+    if (id === 'car') {
+      const a = Array.isArray(assets.car) ? assets.car[0] : assets.car;
+      if (a) return { g: cloneAsset(a).object, wheels: [] };
+      const m = makeVehicle('car', TX, new THREE.Color('#e94f37')); return { g: m.group, wheels: m.wheels };
+    }
+    if (id === 'moto') { const m = makeVehicle('moto', TX, new THREE.Color('#23408e')); return { g: m.group, wheels: m.wheels }; }
+    const m = makeHorseCart(TX); return { g: m.group, wheels: m.wheels, update: m.update };
+  };
+  const rideModels = {};
+  let rideId = 'bike', R = RIDES.bike, rideM = null;
+  const pkg = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.28, 0.34), std(0xffffff, { map: TX.wood, roughness: 0.8 })); pkg.castShadow = true; pkg.visible = false; bike.add(pkg);
+  const headlight = new THREE.SpotLight(0xfff0c8, 0, 34, 0.55, 0.5, 0); bike.add(headlight); bike.add(headlight.target);
+  const mountRide = id => {
+    if (rideM) bike.remove(rideM.g);
+    rideM = rideModels[id] || (rideModels[id] = buildRide(id)); bike.add(rideM.g);
+    rideId = id; R = RIDES[id];
+    headlight.position.set(...R.head); headlight.target.position.set(R.head[0], 0, R.head[2] + 10); pkg.position.set(...R.pkg);
+  };
+  mountRide('bike');
   scene.add(bike);
-  const headlight = new THREE.SpotLight(0xfff0c8, 0, 34, 0.55, 0.5, 0); headlight.position.set(0, 1.0, 0.7); bike.add(headlight); bike.add(headlight.target); headlight.target.position.set(0, 0, 10);
   const arrow = new THREE.Mesh(new THREE.ConeGeometry(0.32, 0.95, 12), new THREE.MeshBasicMaterial({ color: new THREE.Color(0xf2b233).multiplyScalar(1.6) })); arrow.geometry.rotateX(Math.PI / 2); arrow.visible = false; scene.add(arrow);
 
   // ---------- NPCs ----------
@@ -637,14 +707,14 @@ export async function createGame(o) {
     beamMat.color.copy(BEAM_A); beam.visible = true; beam.position.set(A.x, 0, A.z);
     ev({ type: 'toast', text: `အလုပ်သစ် — ${mission.item} သွားယူပါ` });
   };
-  const cancelMission = () => { mission = null; beam.visible = false; BK.pkg.visible = false; arrow.visible = false; };
+  const cancelMission = () => { mission = null; beam.visible = false; pkg.visible = false; arrow.visible = false; };
 
   // ---------- input ----------
   const keys = {}, joy = { x: 0, y: 0, id: null };
-  const kd = e => { keys[e.key.toLowerCase()] = true; if (e.key === ' ') { api.bell(); e.preventDefault(); } };
+  const kd = e => { keys[e.key.toLowerCase()] = true; if (e.key === ' ') { api.bell(); e.preventDefault(); } if (e.key.toLowerCase() === 'v' && !e.repeat) api.cycleRide(); };
   const ku = e => { keys[e.key.toLowerCase()] = false; };
   window.addEventListener('keydown', kd); window.addEventListener('keyup', ku);
-  const jmove = e => { if (joy.id !== e.pointerId) return; const r = joyBase.getBoundingClientRect(), R = r.width / 2; let dx = e.clientX - (r.left + R), dy = e.clientY - (r.top + R); const l = Math.hypot(dx, dy); if (l > R) { dx *= R / l; dy *= R / l; } joy.x = dx / R; joy.y = dy / R; if (joyKnob) joyKnob.style.transform = `translate(${dx}px, ${dy}px)`; };
+  const jmove = e => { if (joy.id !== e.pointerId) return; const r = joyBase.getBoundingClientRect(), rad = r.width / 2; let dx = e.clientX - (r.left + rad), dy = e.clientY - (r.top + rad); const l = Math.hypot(dx, dy); if (l > rad) { dx *= rad / l; dy *= rad / l; } joy.x = dx / rad; joy.y = dy / rad; if (joyKnob) joyKnob.style.transform = `translate(${dx}px, ${dy}px)`; };
   const jdown = e => { joy.id = e.pointerId; try { joyBase.setPointerCapture(e.pointerId); } catch (_) {} jmove(e); e.preventDefault(); };
   const jup = e => { if (joy.id !== e.pointerId) return; joy.id = null; joy.x = joy.y = 0; if (joyKnob) joyKnob.style.transform = 'translate(0px, 0px)'; };
   if (joyBase) { joyBase.addEventListener('pointerdown', jdown); joyBase.addEventListener('pointermove', jmove); joyBase.addEventListener('pointerup', jup); joyBase.addEventListener('pointercancel', jup); }
@@ -710,7 +780,21 @@ export async function createGame(o) {
   const camPos = new THREE.Vector3(P.x - Math.sin(P.h) * CAM[0].d, CAM[0].h, P.z - Math.cos(P.h) * CAM[0].d), look = new THREE.Vector3(), want = new THREE.Vector3();
   const SKY_TOP_D = col('#4e9fdc'), SKY_HOR_D = col('#d9eef8'), SKY_TOP_N = col('#070d1c'), SKY_HOR_N = col('#1a2744'), SKY_HOR_S = col('#ff9a5c'), SKY_TOP_S = col('#7a6fb0');
   const tmp = new THREE.Color(), tmp2 = new THREE.Color(), BULB_D = col('#d6d6d6'), BULB_N = col('#ffe7a8'), MOON = col('#9fb4ff');
-  const blockedR = (x, z) => Math.abs(x) > HW + 8 || Math.abs(z) > HH + 8 || blocked(x, z) || blocked(x + 0.45, z) || blocked(x - 0.45, z) || blocked(x, z + 0.45) || blocked(x, z - 0.45);
+  // Collision samples the ridden vehicle's footprint (corners, side midpoints, centre), so a car
+  // cannot squeeze through a gap a bicycle fits. Fences are thin, so each probe's step is tested.
+  const probeAt = (x, z, h, lx, lz) => [x + lx * Math.cos(h) + lz * Math.sin(h), z - lx * Math.sin(h) + lz * Math.cos(h)];
+  const PROBES = [[0, 0], [1, 1], [-1, 1], [1, -1], [-1, -1], [0, 1], [0, -1], [1, 0], [-1, 0]];
+  const poseBlocked = (x, z, h, fromX = x, fromZ = z, fromH = h) => {
+    if (Math.abs(x) > HW + 8 || Math.abs(z) > HH + 8) return true;
+    const [hw, hl] = R.half;
+    for (const [sx, sz] of PROBES) {
+      const [wx, wz] = probeAt(x, z, h, sx * hw, sz * hl);
+      if (blocked(wx, wz)) return true;
+      const [ox, oz] = probeAt(fromX, fromZ, fromH, sx * hw, sz * hl);
+      if (fences.hits(ox, oz, wx, wz)) return true;
+    }
+    return false;
+  };
   // three.js fov is VERTICAL, so a tall phone screen collapses the horizontal field: 46 deg
   // vertical is 85 deg across in landscape but only 22 deg in portrait, magnifying the world
   // ~4x and making every texel cover 4x the pixels - which reads as blur. Widen the vertical
@@ -749,25 +833,27 @@ export async function createGame(o) {
       if (keys.w || keys.arrowup) thr = 1; if (keys.s || keys.arrowdown) thr = -1;
     }
     P.steer += (steer - P.steer) * Math.min(1, dt * 8);
-    if (thr > 0) P.v += thr * 4.2 * dt; else if (thr < 0) P.v += (P.v > 0.2 ? thr * 10 : thr * 2) * dt;
-    P.v -= P.v * 0.35 * dt; P.v = Math.max(-2.2, Math.min(9, P.v));
+    if (thr > 0) P.v += thr * R.acc * dt; else if (thr < 0) P.v += (P.v > 0.2 ? thr * R.brake : thr * R.rev) * dt;
+    P.v -= P.v * 0.35 * dt; P.v = Math.max(-R.rev, Math.min(R.vmax, P.v));
     if (Math.abs(P.v) < 0.03 && !thr) P.v = 0;
-    P.h -= P.steer * 1.9 * dt * Math.min(1, Math.abs(P.v) / 2.5 + 0.15) * Math.sign(P.v || 1);
+    const oh = P.h;
+    P.h -= P.steer * R.turn * dt * Math.min(1, Math.abs(P.v) / 2.5 + 0.15) * Math.sign(P.v || 1);
     const nx = P.x + Math.sin(P.h) * P.v * dt, nz = P.z + Math.cos(P.h) * P.v * dt;
-    // compound fences are thin segments, so they are tested against the step itself
-    const stop = (x, z) => blockedR(x, z) || fences.hits(P.x, P.z, x, z);
-    if (!stop(nx, nz)) { P.x = nx; P.z = nz; }
-    else if (!stop(nx, P.z)) { P.x = nx; P.v *= 0.92; }
-    else if (!stop(P.x, nz)) { P.z = nz; P.v *= 0.92; }
-    else { if (Math.abs(P.v) > 3 && bumpT <= 0) { SND.bump(); bumpT = 0.6; } P.v *= -0.2; }
+    const stop = (x, z, h) => poseBlocked(x, z, h, P.x, P.z, oh);
+    if (!stop(nx, nz, P.h)) { P.x = nx; P.z = nz; }
+    else if (!stop(nx, P.z, P.h)) { P.x = nx; P.v *= 0.92; }
+    else if (!stop(P.x, nz, P.h)) { P.z = nz; P.v *= 0.92; }
+    else { if (Math.abs(P.v) > 3 && bumpT <= 0) { SND.bump(); bumpT = 0.6; } P.v *= -0.2; if (stop(P.x, P.z, P.h)) P.h = oh; }
     bumpT -= dt;
     bike.position.set(P.x, 0, P.z); bike.rotation.y = P.h;
-    bike.rotation.z += ((P.steer * Math.min(1, Math.abs(P.v) / 7) * 0.3) - bike.rotation.z) * Math.min(1, dt * 6);
-    P.wheel += P.v * dt / 0.34;
+    bike.rotation.z += ((P.steer * Math.min(1, Math.abs(P.v) / 7) * R.lean) - bike.rotation.z) * Math.min(1, dt * 6);
+    P.wheel += P.v * dt / R.wheelR;
     if (thr > 0 || P.v > 0.4) P.phase += Math.max(0, P.v) * dt * 1.3;
-    BK.update(P.phase, P.wheel);
+    for (const w of rideM.wheels) w.rotation.x = P.wheel;
+    if (rideM.update) rideM.update(P.phase, P.wheel, Math.min(1, Math.abs(P.v) / 2));
     puffT -= dt;
-    if (Math.abs(P.v) > 2.5 && puffT <= 0) { puffT = 0.05; const [d, s] = nearSeg(P.x, P.z); const dirt = d > 0 || (s && s[7]); puffs.emit(P.x - Math.sin(P.h) * 0.6 + (Math.random() - 0.5) * 0.2, 0.15, P.z - Math.cos(P.h) * 0.6, dirt ? 1 : 0.25); }
+    // dust from the back of whatever is ridden; engines leave a faint puff even on tarmac
+    if (Math.abs(P.v) > 2.5 && puffT <= 0) { puffT = 0.05; const [d, s] = nearSeg(P.x, P.z); const dirt = d > 0 || (s && s[7]), back = R.half[1]; puffs.emit(P.x - Math.sin(P.h) * back + (Math.random() - 0.5) * 0.2, 0.15, P.z - Math.cos(P.h) * back, dirt ? 1 : R.sound === 'horn' ? 0.4 : 0.25); }
 
     if (opts.realClock) hour = nowHour();
     else if (playing) hour = (hour + dt * 24 / (dayMin * 60)) % 24;
@@ -832,7 +918,8 @@ export async function createGame(o) {
         if (a.arms) { a.arms.forEach((ar, i) => { if (!ar.userData.fixed) ar.rotation.x = Math.sin(a.walk + i * Math.PI) * 0.45 * (a.cur / a.speed); }); a.feet.forEach((f, i) => { f.position.z = 0.02 + Math.sin(a.walk + i * Math.PI) * 0.12 * (a.cur / a.speed); }); a.g.position.y = Math.abs(Math.sin(a.walk)) * 0.03; }
       } else if (a.wheels) for (const w of a.wheels) w.rotation.x += a.cur * dt / 0.33;
       const dp = Math.hypot(qx, qz);
-      if (dp < a.r + 0.6 && dp > 0.01) { P.x += qx / dp * (a.r + 0.6 - dp); P.z += qz / dp * (a.r + 0.6 - dp); P.v *= 0.7; }
+      const pr = a.r + R.half[0] + 0.25;
+      if (dp < pr && dp > 0.01) { P.x += qx / dp * (pr - dp); P.z += qz / dp * (pr - dp); P.v *= 0.7; }
     }
     if (train) {
       const T = train;
@@ -848,16 +935,16 @@ export async function createGame(o) {
       beam.material.opacity = 0.22 + Math.sin(tsec * 4) * 0.08;
       arrow.visible = d > 12; arrow.position.set(P.x, 3.2 + Math.sin(tsec * 3) * 0.1, P.z); arrow.rotation.y = Math.atan2(T.x - P.x, T.z - P.z);
       if (d < 7) {
-        if (mission.stage === 'pickup') { mission.stage = 'deliver'; mission.t = 0; BK.pkg.visible = true; beamMat.color.copy(BEAM_B); beam.position.set(mission.B.x, 0, mission.B.z); SND.pick(); ev({ type: 'toast', text: `${mission.item} ရပြီ — ပို့ရန် သွားပါ` }); }
+        if (mission.stage === 'pickup') { mission.stage = 'deliver'; mission.t = 0; pkg.visible = true; beamMat.color.copy(BEAM_B); beam.position.set(mission.B.x, 0, mission.B.z); SND.pick(); ev({ type: 'toast', text: `${mission.item} ရပြီ — ပို့ရန် သွားပါ` }); }
         else { const base = Math.round(mission.dist / 10) * 50 + 500, bonus = mission.t < mission.limit ? Math.round((mission.limit - mission.t) * 10 / 50) * 50 : 0; money += base + bonus; delivered++; SND.done(); ev({ type: 'toast', text: `ပို့ဆောင်ပြီး! +${my((base + bonus).toLocaleString())} ကျပ်${bonus ? ' (အချိန်ဆုကြေး ပါ)' : ''}` }); cancelMission(); }
       }
     }
     popT -= dt;
     if (popT <= 0) { popT = 0.3; let bp = null, bd = 28; for (const p of W.pois) { const d = Math.hypot(p.x - P.x, p.z - P.z); if (d < bd) { bd = d; bp = p; } } popup = bp; }
-    const cm = CAM[camMode], k = 1 - Math.exp(-dt * 4.2);
-    want.set(P.x - Math.sin(P.h) * cm.d, cm.h, P.z - Math.cos(P.h) * cm.d);
+    const cm = CAM[camMode], k = 1 - Math.exp(-dt * 4.2), cs = R.cam, up = 1 + (cs - 1) * 0.9;
+    want.set(P.x - Math.sin(P.h) * cm.d * cs, cm.h * up, P.z - Math.cos(P.h) * cm.d * cs);
     camPos.lerp(want, k); camera.position.copy(camPos);
-    look.set(P.x + Math.sin(P.h) * cm.look, cm.lookY, P.z + Math.cos(P.h) * cm.look); camera.lookAt(look);
+    look.set(P.x + Math.sin(P.h) * cm.look * cs, cm.lookY * (1 + (cs - 1) * 0.6), P.z + Math.cos(P.h) * cm.look * cs); camera.lookAt(look);
     cullT -= dt;
     if (cullT <= 0) {
       cullT = 0.2;
@@ -872,19 +959,32 @@ export async function createGame(o) {
       hudT = 0.2;
       let m = null;
       if (mission) { const T = mission.stage === 'pickup' ? mission.A : mission.B; m = { stage: mission.stage, item: mission.item, label: T.label, dist: Math.round(Math.hypot(T.x - P.x, T.z - P.z)), left: mission.stage === 'deliver' ? Math.max(0, Math.round(mission.limit - mission.t)) : null }; }
-      hud({ loading: false, ready: true, offline: W.offline, sat: !!sat, hour, money, delivered, flowers: flowersGot, flowersTotal: flowers.length, speed: Math.round(Math.abs(P.v) * 3.6), mission: m, popup: popup ? { name: popup.name, en: popup.en, kind: popup.kind } : null, stats: { b: W.buildings.length, r: W.roads.length, p: W.pois.length, models: Object.keys(assets).length } });
+      hud({ loading: false, ready: true, offline: W.offline, sat: !!sat, hour, money, delivered, flowers: flowersGot, flowersTotal: flowers.length, speed: Math.round(Math.abs(P.v) * 3.6), ride: rideId, mission: m, popup: popup ? { name: popup.name, en: popup.en, kind: popup.kind } : null, stats: { b: W.buildings.length, r: W.roads.length, p: W.pois.length, models: Object.keys(assets).length } });
     }
   };
   // Link every shader before the first frame (in parallel where KHR_parallel_shader_compile is
   // available) so the opening seconds do not hitch on program compiles — worst on phones.
   msg('ဂရပ်ဖစ် ပြင်ဆင်နေသည်…', 0.95);
+  // the other rideable vehicles join that compile, so the first switch to them does not hitch
+  const preload = RIDE_ORDER.filter(id => !rideModels[id]).map(id => (rideModels[id] = buildRide(id)).g);
+  preload.forEach(g => scene.add(g));
   try { await renderer.compileAsync(scene, camera); } catch (e) { /* older drivers: compile lazily */ }
+  preload.forEach(g => scene.remove(g));
   raf = requestAnimationFrame(frame);
 
   const api = {
     start() { ac(); playing = true; perfAcc = 0; perfN = 0; },   // fresh timing window
     info: () => ({ calls: renderer.info.render.calls, tris: renderer.info.render.triangles, pr }),
-    bell() { SND.bell(); for (const a of agents) if (a.type === 'ped' && Math.hypot(a.g.position.x - P.x, a.g.position.z - P.z) < 12) a.lane = Math.sign(a.lane || 1) * 4.3; },
+    bell() { if (R.sound === 'horn') SND.horn(); else SND.bell(); for (const a of agents) if (a.type === 'ped' && Math.hypot(a.g.position.x - P.x, a.g.position.z - P.z) < 12) a.lane = Math.sign(a.lane || 1) * 4.3; },
+    // Switch to the next rideable vehicle, unless it would not fit where the player stands.
+    cycleRide() {
+      const prev = rideId, next = RIDE_ORDER[(RIDE_ORDER.indexOf(rideId) + 1) % RIDE_ORDER.length];
+      mountRide(next);
+      if (poseBlocked(P.x, P.z, P.h)) { mountRide(prev); ev({ type: 'toast', text: `${RIDES[next].name} အတွက် နေရာမလောက်ပါ — လမ်းပေါ်ထွက်ပါ` }); return; }
+      P.v = 0; collectMats();
+      ev({ type: 'toast', text: RIDES[next].name });
+      hud({ ride: rideId });
+    },
     cycleCamera() { camMode = (camMode + 1) % CAM.length; if (fx) fx.setBlur(CAM[camMode].blur); },
     toggleMission() { if (mission) { cancelMission(); ev({ type: 'toast', text: 'အလုပ် ပယ်ဖျက်ပြီး' }); } else startMission(); },
     setDayMinutes(m) { dayMin = Math.max(1, m || 8); },
