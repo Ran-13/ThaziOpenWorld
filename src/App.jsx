@@ -62,6 +62,7 @@ export default function App() {
 
   const [diag, setDiag] = useState(null);
   useEffect(() => {
+    if (started) return undefined;   // the panel only shows on the start screen
     const id = setInterval(() => {
       const c = document.querySelector('canvas'); if (!c) return;
       let n = 0; const t0 = performance.now();
@@ -74,7 +75,7 @@ export default function App() {
       requestAnimationFrame(tick);
     }, 1200);
     return () => clearInterval(id);
-  }, [rotate]);
+  }, [rotate, started]);
 
   const hr = hud.hour ?? (OPTIONS.realClock ? new Date().getHours() : OPTIONS.startHour), H = Math.floor(hr), Mi = Math.floor((hr - H) * 60), h12 = ((H + 11) % 12) + 1;
   const period = H >= 4 && H < 12 ? 'မနက်' : H >= 12 && H < 16 ? 'နေ့လယ်' : H >= 16 && H < 19 ? 'ညနေ' : 'ည';
@@ -166,7 +167,7 @@ export default function App() {
                 dpr {diag.dpr} · ratio {diag.ratio} · fps {diag.fps}<br />buffer {diag.back}<br />css {diag.css} · rot {diag.rot}{diag.gi ? <>{'\n'}<br />calls {diag.gi.calls} · tris {(diag.gi.tris / 1e6).toFixed(2)}M</> : null}
               </div>
             )}
-            <div style={{ fontSize: 10, color: '#a2968a', lineHeight: 1.5 }}>မော်ဒယ်များ — Kenney, Quaternius (CC0) · ထန်းပင် Poly by Google, ဆိုင်ကယ် Vladimir Ilic, သစ်ပင် 3Donimus (CC-BY)</div>
+            <div style={{ fontSize: 10, color: '#a2968a', lineHeight: 1.5 }}>မော်ဒယ်များ — Kenney, Quaternius (CC0) · ဆိုင်ကယ် Vladimir Ilic (CC-BY)</div>
           </div>
         </div>
       )}

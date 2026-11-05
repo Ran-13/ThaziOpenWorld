@@ -13,20 +13,26 @@ npm run build
 - `src/App.jsx` — React shell: start screen, HUD (speed, clock, minimap), touch controls, settings. Calls `createGame()` once and gets HUD state back through `onHud`.
 - `src/engine/game.js` — `createGame({ container, modelsBase, onHud, opts })`. Builds the world, runs the loop, handles input, camera, traffic, train, day/night. Returns `{ dispose, setOpt, ... }`.
 - `src/engine/osm.js` — fetches OpenStreetMap data from Overpass (bbox `BB`, several mirror endpoints, localStorage cache), then `parse()` turns it into roads, buildings, landuse, water, rail, pagodas and POIs in local metres (`px`/`pz`). Seeded `rnd()` keeps the town the same on every run.
-- `src/engine/models.js` — built-in procedural models: bike + rider, vehicles (car, pickup, moto, trishaw), people in longyi, train cars, station, pagoda, palm/round trees, bushes. `bake()` merges static meshes.
-- `src/engine/textures.js` — canvas-generated textures (asphalt, dirt, bamboo, wood, tin, plaster, windows, train livery).
-- `src/engine/assets.js` — optional GLB loading from `public/models/models.json`. A slot with a file overrides the procedural model, and `file` can be an array for random variety. Also has `cloneAsset` (skinned + animation mixer) and `instancedFromAsset`.
+- `src/engine/models.js` — built-in procedural models: bike + rider, vehicles (car, pickup, moto, trishaw), people in longyi, train cars, station, pagoda. `bake()` merges static meshes.
+- `src/engine/textures.js` — canvas-generated textures (ground, bamboo, wood, tin, plaster, concrete, longyi, train livery, station sign).
+- `src/engine/assets.js` — optional GLB loading from `public/models/models.json`. A slot with a file overrides the procedural model, and `file` can be an array for random variety. Also has `cloneAsset` (skinned + animation mixer) and `instancedFromAsset`. `mobileVariants` in a slot keeps that many variants on phones (default 1).
+- `src/engine/homes.js` — every OSM building as Kenney suburban houses (`homes` slot): one fitted house per rectangular lot (front to the street), a grid of houses on lots > 240 m², the oriented bounding rectangle for other polygons. Two LODs: per-variant InstancedMesh within `radius` of the player (rebuilt every 16 m), plus one box+hip-roof InstancedMesh for all homes (near ones collapsed in its vertex shader). Shader restyles the Kenney palette by UV cell: green roof swatch → corrugated tin with rust, white wall swatch → per-house plaster colour, glass → lit at night. Rural lots get stilt houses (lift + posts + deck). Shadow depth pass skips homes beyond 75 m.
+- `src/engine/plots.js` — compounds (ခြံ). OSM has house footprints but not the plots around them, so each yard is derived: footprint-aware Voronoi between neighbouring buildings, cut back from streets/rails, capped at 7 m from the house. Convex polygons whose edges are labelled street / neighbour / open land. Yards are filled into the ground chunks (game.js).
+- `src/engine/fences.js` — compound fences along plot edges (shared edges drawn once, gate on the longest street edge). Kit `fence` GLB segments within `nearR` (matrices built lazily), a board-and-post shader strip per chunk beyond it.
 - `src/engine/fx.js` — post-processing (bloom, tilt-shift), sky shader, water shader, dust motes, exhaust puffs.
-- `public/models/` — the Kenney CC0 GLBs currently in use (city-builder shops, racing-kit vehicles, platformer character) and `models.json`.
+- `public/models/` — GLBs in use and `models.json`. The town itself is only the Kenney City Kit (Suburban) in `kenney-suburban/`: houses, trees, planter, fence. Roads use that kit's path/driveway colours (`DRIVE_C`/`PATH_C` in game.js), not separate tiles.
 
 ## Conventions
 - World units are metres. +Y is up. Models face +Z.
 - Static geometry is merged per material (`G.seg`, `G.disc`, wall builders) to keep draw calls low. Repeated objects use InstancedMesh. Don't add per-object meshes in loops.
 - Quality modes: `Best` / `Fast` (`opts.quality`). Fast turns off shadows/bloom and lowers pixel ratio. Mobile goes to Fast automatically.
+- Static world objects are frozen after build (`freeze()` in game.js: `matrixAutoUpdate`/`matrixWorldAutoUpdate` off, scene root too). Anything that moves must be created after the freeze point or kept out of it, or it will not move.
+- Chunk meshes take a cull ring: `CULL_R` for walls/roads/trees, `DETAIL_R` for small props (windows, doors, fences, bushes, lamp arms). Pass it to `mkInst`/`ChunkB.meshes`/`placeTrees` for new prop types.
+- Phones: Phong for homes, no shadow map (blob shadows under bike/traffic + contact pads under homes instead), frame pacing to 60 fps, shaders compiled with `compileAsync` before the first frame.
 - Ground modes: `Stylized` (default) / `Satellite` (Esri tiles).
 
 ## Known issues
-1. Kenney "building-small" shops are stretched to OSM footprints and can look distorted on very narrow plots. Only used on lots facing major roads, area < 260 m², 4-point footprints.
+1. Every building is a suburban kit house, including the market, schools and monasteries (as house grids). There are no shop or public-building models.
 2. Model orientation (`rotateY` in models.json) for the Kenney vehicles/character hasn't been checked in-game. Make sure cars drive nose-first.
 3. The Kenney character walk clip name is set to `walk`. Check the GLB's real clip names and fix `walkClip`.
 4. Overpass can be slow or down. The game falls back to cached data, but there's no bundled offline snapshot.

@@ -118,3 +118,20 @@ export function makePuffs(n = 90) {
     },
   };
 }
+
+// Soft contact shadow / AO pad, multiplied onto the ground (instanced unit quad in XZ).
+// Analytic soft box (no texture) faded out with the fog so far pads do not print grey patches.
+export function contactShadowMaterial(fade, strength) {
+  return new THREE.ShaderMaterial({
+    uniforms: { uFade: { value: new THREE.Vector2(fade[0], fade[1]) }, uK: { value: strength } },
+    vertexShader: `varying vec2 vUv; varying float vDist;
+      void main() { vUv = uv; vec4 w = modelMatrix * instanceMatrix * vec4( position, 1.0 ); vDist = distance( w.xyz, cameraPosition );
+        gl_Position = projectionMatrix * viewMatrix * w; }`,
+    fragmentShader: `uniform vec2 uFade; uniform float uK; varying vec2 vUv; varying float vDist;
+      void main() { vec2 q = abs( vUv - 0.5 ) * 2.0; float e = length( max( q - 0.55, 0.0 ) ) / 0.45;
+        float a = ( 1.0 - smoothstep( 0.0, 1.0, e ) ) * ( 1.0 - smoothstep( uFade.x, uFade.y, vDist ) );
+        gl_FragColor = vec4( vec3( 1.0 - uK * a ), 1.0 ); }`,
+    blending: THREE.MultiplyBlending, transparent: true, depthWrite: false,
+    polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4,
+  });
+}

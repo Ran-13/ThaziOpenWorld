@@ -14,10 +14,14 @@ export async function loadAssets(base, msg, opts = {}) {
   await Promise.all(slots.map(async ([slot, cfg]) => {
     const files = Array.isArray(cfg.file) ? cfg.file : [cfg.file];
     // Phones: one variant per slot is enough — random variety costs RAM for little visual gain.
-    const pick = opts.oneVariant ? [files[Math.floor(Math.random() * files.length)]] : files;
+    // A slot can ask for more with mobileVariants (an evenly spaced subset, so it is stable).
+    const nMobile = Math.min(files.length, cfg.mobileVariants || 1);
+    const pick = !opts.oneVariant ? files
+      : nMobile > 1 ? Array.from({ length: nMobile }, (_, i) => files[Math.floor(i * files.length / nMobile)])
+      : [files[Math.floor(Math.random() * files.length)]];
     const res = await Promise.all(pick.map(async f => { try { return prepare(await loader.loadAsync(base + f), cfg); } catch (e) { console.warn('[models] could not load', slot, f, e); return null; } }));
     const ok = res.filter(Boolean); if (!ok.length) return;
-    out[slot] = (!opts.oneVariant && Array.isArray(cfg.file)) ? ok : ok[0];
+    out[slot] = (Array.isArray(cfg.file) && (!opts.oneVariant || nMobile > 1)) ? ok : ok[0];
   }));
   return out;
 }

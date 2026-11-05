@@ -1,19 +1,17 @@
 import * as THREE from './three.js';
 import * as O from './osm.js';
 import { makeTextures } from './textures.js';
-import { std, tube, bake, makeBike, makePagoda, makePagodaMats, makeStation, makeTrainCar, makeVehicle, vehicleLights, makePerson, palmGeometries, roundTreeGeometries, bushGeometry } from './models.js';
+import { std, tube, bake, makeBike, makePagoda, makePagodaMats, makeStation, makeTrainCar, makeVehicle, vehicleLights, makePerson } from './models.js';
 import { loadAssets, cloneAsset, instancedFromAsset } from './assets.js';
-import { makeComposer, makeSky, makeWaterMaterial, makeMotes, makePuffs } from './fx.js';
+import { createHomes } from './homes.js';
+import { makePlots } from './plots.js';
+import { createFences } from './fences.js';
+import { makeComposer, makeSky, makeWaterMaterial, makeMotes, makePuffs, contactShadowMaterial } from './fx.js';
 
-const { BB, px, pz, HW, HH, BX, BZ, MR, UP, my, rnd, pick, mpick, col, MAJOR, DRIVE, WALLS, BRICKS, CAR_COLS, ITEMS, pip, area, centroid, segDist, clipSeg, Grid, Builder, bhash, h01 } = O;
+const { BB, px, pz, HW, HH, BX, BZ, MR, UP, my, rnd, pick, mpick, col, MAJOR, DRIVE, WALLS, CAR_COLS, ITEMS, pip, area, centroid, segDist, clipSeg, Grid, Builder, bhash, h01 } = O;
 export { my };
 const UNPAVED = /unpaved|dirt|ground|gravel|sand|earth|compacted/;
 const TIN = ['#d6dadd', '#c9ccd0', '#b98d6a', '#a85a44', '#6f8fa6', '#7f9a7a', '#e0e2e4', '#c08a5a', '#8a9e7a', '#c4a882', '#9aabb8', '#d4b896'];
-const WOODS = ['#e2c09a', '#d4ab82', '#c79a6e', '#e8cfae', '#c9a06e', '#b8895c', '#d8b890'];
-const AWNINGS = ['#c4573a', '#2f8f83', '#d9a441', '#3b6ea5', '#7a3b6e', '#e8e4d8', '#5b7a3a', '#c47a3a'];
-const FASCIA = ['#5a3d2b', '#6b4630', '#4a3428', '#7a5240'];
-const PLINTH = ['#d8d0c4', '#cfc6b8', '#e2d9cc', '#c4bbae'];
-const pickH = (arr, h, k) => arr[Math.floor(h01(h, k) * arr.length) % arr.length];
 
 async function loadSatellite(msg, small) {
   const z = small ? 17 : 18, n = 2 ** z, BLK = 4;
@@ -74,10 +72,9 @@ export async function createGame(o) {
   const yieldToPaint = () => new Promise(r => setTimeout(r, 0));
   let prog = 0;
   const msg = (m, p) => { if (p != null) prog = p; hud({ loading: true, loadMsg: m, progress: prog }); };
-  // Phones skip heavy GLBs. Desktop keeps Kenney city shop kits for street fronts.
-  const assetOpts = mobile
-    ? { skip: ['houses', 'palm', 'tree', 'person'], oneVariant: true }
-    : {};
+  // Phones skip the animated person GLB (skinned mixers are CPU-heavy) and load fewer variants.
+  // The kit houses, trees, planters and fences are light and stay on.
+  const assetOpts = mobile ? { skip: ['person'], oneVariant: true } : {};
 
   msg('စတင်နေသည်…', 0.03);
   msg('စတင်နေသည်…', 0.08);
@@ -91,7 +88,6 @@ export async function createGame(o) {
   const isMobile = typeof matchMedia !== 'undefined' && matchMedia('(pointer: coarse)').matches;
   const sat = opts.ground === 'Satellite' ? await loadSatellite(msg, isMobile) : null;
   msg('မြို့ကို တည်ဆောက်နေသည်…', 0.58);
-  const satRoof = (x, z) => { if (!sat) return null; const d = sat.sample, u = (x - sat.wx0) / (sat.wx1 - sat.wx0), v = (z - sat.wz0) / (sat.wz1 - sat.wz0); const ix = Math.floor(u * d.width), iy = Math.floor(v * d.height); if (ix < 0 || iy < 0 || ix >= d.width || iy >= d.height) return null; const i = (iy * d.width + ix) * 4, r = d.data[i], gg = d.data[i + 1], b = d.data[i + 2]; if (gg > r * 1.06 && gg > b) return null; const c = new THREE.Color().setRGB(r / 255, gg / 255, b / 255, THREE.SRGBColorSpace); return c.lerp(new THREE.Color(1, 1, 1), 0.18); };
 
   // ---------- renderer / scene ----------
   // Light MSAA on phones: with no post path this is cheap edge cleanup vs a soft upscale.
@@ -125,8 +121,11 @@ export async function createGame(o) {
   scene.fog = new THREE.Fog(0xbfe4f5, mobile ? 140 : 200, mobile ? 520 : 980);
   const CHUNK = 160, ck = (x, z) => Math.floor(x / CHUNK) + ',' + Math.floor(z / CHUNK);
   const cullMeshes = [];
-  const trackChunk = (me, ix, iz) => { cullMeshes.push({ me, ix, iz }); };
   const CULL_R = mobile ? 2 : 6;
+  // Small props (windows, doors, fences, bushes, lamp arms...) are a few pixels past a couple of
+  // chunks but cost a draw call per chunk each, so they get a tighter ring than walls and roads.
+  const DETAIL_R = mobile ? 1 : 2;
+  const trackChunk = (me, ix, iz, r = CULL_R) => { cullMeshes.push({ me, ix, iz, r }); };
   class ChunkB {
     constructor(us) { this.m = new Map(); this.us = us; }
     at(x, z) { const k = ck(x, z); let b = this.m.get(k); if (!b) { b = new Builder(); if (this.us) b.us = this.us; this.m.set(k, b); } return b; }
@@ -135,10 +134,10 @@ export async function createGame(o) {
     disc(x, z, r, y, c) { this.at(x, z).disc(x, z, r, y, c, 14); }
     segUV(ax, az, bx, bz, w, y, c, v0, v1) { this.at((ax + bx) / 2, (az + bz) / 2).segUV(ax, az, bx, bz, w, y, c, v0, v1); }
     quadUV(aL, bL, bR, aR, y, c, v0, v1) { const cx = (aL[0] + bL[0] + bR[0] + aR[0]) / 4, cz = (aL[1] + bL[1] + bR[1] + aR[1]) / 4; this.at(cx, cz).quad([aL[0], y, aL[1]], [bL[0], y, bL[1]], [bR[0], y, bR[1]], [aR[0], y, aR[1]], c, UP, [0, v0], [0, v1], [1, v1], [1, v0]); }
-    meshes(mat, cast, recv, order) {
+    meshes(mat, cast, recv, order, r) {
       for (const [k, b] of this.m) if (!b.empty) {
         const me = b.mesh(mat); me.castShadow = cast; me.receiveShadow = recv; if (order) me.renderOrder = order;
-        scene.add(me); const p = k.split(','); trackChunk(me, +p[0], +p[1]);
+        scene.add(me); const p = k.split(','); trackChunk(me, +p[0], +p[1], r);
       }
     }
   }
@@ -237,25 +236,47 @@ export async function createGame(o) {
   // ---------- ground ----------
   const G = new ChunkB(6);
   if (!sat) for (const g of W.greens.sort((a, b) => a.y - b.y)) G.poly(g.pts, g.y, col(g.color));
+  // compounds (plots.js): their bare-earth yards go into the ground chunks, fences come later
+  msg('ခြံဝင်းများ ဆွဲနေသည်…', 0.66);
+  const plots = makePlots(W.buildings, roadSegs.map(r => [r[0], r[1], r[2], r[3], r[4], 'r']).concat(railSegs.map(c => [c[0], c[1], c[2], c[3], 7, 'x'])));
+  if (!sat) {
+    const YARD_C = ['#d9c49a', '#d2b98c', '#cdbb93', '#d8c8a2', '#c9b48a', '#bfc98e'].map(col);
+    plots.forEach((pl, i) => { if (pl) { const [cx, cz] = centroid(W.buildings[i].pts); G.poly(pl.p, 0.03, YARD_C[Math.floor(h01(bhash(cx, cz), 50) * YARD_C.length) % YARD_C.length]); } });
+  }
   const bedC = col('#6f9c94');
   for (const w of W.waters) G.poly(w, 0.025, bedC);
-  const curbC = col('#ebe3d2'), majC = col('#7f848d'), resC = col('#959aa2'), trkC = col('#d2b27f'), footC = col('#e9dfc9'), dashC = col('#fbf6e6');
   const order = s => (MAJOR.has(s[6].type) ? 3 : DRIVE.has(s[6].type) ? 2 : 1);
   const sorted = roadSegs.slice().sort((a, b) => order(a) - order(b));
-  const shoulderC = col('#d8c49a'), white = col('#ffffff');
-  const RD = { major: new ChunkB(), plain: new ChunkB(), dirt: new ChunkB() }, JN = { major: new ChunkB(8), plain: new ChunkB(8), dirt: new ChunkB(8) };
+  // Roads in the Kenney kit's own colours, sampled from its tiles: driveway slate for streets with
+  // traffic, path grey for footways and dirt tracks. Laid continuously along the real OSM
+  // centre-lines with mitred bends (the kit's straight tiles would gap and overlap at every bend).
+  const DRIVE_C = col('#4d515e'), PATH_C = col('#747990');
+  const RK = new ChunkB(), MK = new ChunkB();
   const ordR = r => (MAJOR.has(r.type) ? 3 : DRIVE.has(r.type) ? 2 : 1);
+  // Road markings on paved streets: a dashed white centre line, and solid edge lines on streets
+  // 5 m and wider. Nodes shared by two or more ways are junctions; markings stop short of them so
+  // lines never run across a crossing street.
+  const MARK_C = col('#eeeee4'), DASH = 3, GAP = 3, LINE_W = 0.14;
+  const nodeUse = new Map();
+  for (const r of W.roads) if (r.nodes) for (const n of new Set(r.nodes)) nodeUse.set(n, (nodeUse.get(n) || 0) + 1);
+  // lay one marking strip at signed offset `off` from the centre-line of road r between global
+  // distances a..b along it; mitred offsets at real vertices keep solid lines unbroken at bends
+  const markStrip = (r, mit, cumAt, y, off, a, b) => {
+    for (let i = 0; i < r.pts.length - 1; i++) {
+      const s0 = Math.max(a, cumAt[i]), s1 = Math.min(b, cumAt[i + 1]); if (s1 - s0 < 0.05) continue;
+      const p = r.pts[i], q = r.pts[i + 1], L = cumAt[i + 1] - cumAt[i], ux = (q[0] - p[0]) / L, uz = (q[1] - p[1]) / L;
+      const at = (d, o) => { const l = d - cumAt[i], m = l < 1e-4 ? mit[i] : L - l < 1e-4 ? mit[i + 1] : [-uz, ux]; return [p[0] + ux * l + m[0] * o, p[1] + uz * l + m[1] * o]; };
+      MK.quadUV(at(s0, off - LINE_W / 2), at(s1, off - LINE_W / 2), at(s1, off + LINE_W / 2), at(s0, off + LINE_W / 2), y, MARK_C, 0, 0);
+    }
+  };
   let wi = 0;
   for (const r of W.roads.slice().sort((a, b) => ordR(a) - ordR(b))) {
     const lift = (wi++ % 5) * 0.003;
-    const t = r.type, unp = t === 'track' || UNPAVED.test(r.tags.surface || ''), drive = DRIVE.has(t) || t === 'track';
-    const kind = !drive ? null : unp ? 'dirt' : MAJOR.has(t) ? 'major' : 'plain';
+    const t = r.type, drive = DRIVE.has(t) || t === 'track', paved = drive && t !== 'track' && !UNPAVED.test(r.tags.surface || '');
     // each class needs its own band: base gaps must exceed the 0.012 lift range, or a
-    // pale footpath lands on top of the asphalt it crosses
-    const y = (MAJOR.has(t) ? 0.095 : drive ? 0.07 : 0.05) + lift, rep = 16;
-    // consecutive segments used to be independent quads on one plane: at a bend they overlapped,
-    // so they z-fought and the next quad dragged its sandy edge across the road. Mitre the joints
-    // so neighbouring quads share an exact edge instead.
+    // footpath lands on top of the street it crosses
+    const y = (MAJOR.has(t) ? 0.095 : drive ? 0.07 : 0.05) + lift, rc = paved ? DRIVE_C : PATH_C;
+    // mitre the joints so neighbouring quads share an exact edge instead of overlapping at bends
     const mit = [];
     for (let i = 0; i < r.pts.length; i++) {
       const a = r.pts[i - 1], b = r.pts[i], d = r.pts[i + 1];
@@ -269,22 +290,31 @@ export async function createGame(o) {
       const k = Math.max(0.4, mx * n1x + mz * n1z);   // clamp so hairpins do not spike
       mit.push([mx / k, mz / k]);
     }
-    let cum = 0;
     for (let i = 0; i < r.pts.length - 1; i++) {
-      const p = r.pts[i], q = r.pts[i + 1], L0 = Math.hypot(q[0] - p[0], q[1] - p[1]);
-      const c = clipSeg(p[0], p[1], q[0], q[1]); if (!c) { cum += L0; continue; }
-      const L = Math.hypot(c[2] - c[0], c[3] - c[1]);
-      if (!kind) { G.seg(c[0], c[1], c[2], c[3], r.w, y, footC); G.disc(c[2], c[3], r.w / 2, y, footC); cum += L0; continue; }
-      if (kind !== 'dirt') { G.seg(c[0], c[1], c[2], c[3], r.w + 2.0, 0.04 + lift * 0.25, shoulderC); G.disc(c[0], c[1], (r.w + 2.0) / 2, 0.04 + lift * 0.25, shoulderC); G.disc(c[2], c[3], (r.w + 2.0) / 2, 0.04 + lift * 0.25, shoulderC); }
+      const p = r.pts[i], q = r.pts[i + 1];
+      const c = clipSeg(p[0], p[1], q[0], q[1]); if (!c) continue;
       const whole = Math.abs(c[0] - p[0]) < 1e-6 && Math.abs(c[1] - p[1]) < 1e-6 && Math.abs(c[2] - q[0]) < 1e-6 && Math.abs(c[3] - q[1]) < 1e-6;
       if (whole) {
         const hw = r.w / 2, ma = mit[i], mb = mit[i + 1];
-        RD[kind].quadUV([p[0] + ma[0] * hw, p[1] + ma[1] * hw], [q[0] + mb[0] * hw, q[1] + mb[1] * hw],
-          [q[0] - mb[0] * hw, q[1] - mb[1] * hw], [p[0] - ma[0] * hw, p[1] - ma[1] * hw], y, white, cum / rep, (cum + L) / rep);
-      } else RD[kind].segUV(c[0], c[1], c[2], c[3], r.w, y, white, cum / rep, (cum + L) / rep);
-      const jn = JN[kind];
-      jn.disc(c[0], c[1], r.w / 2, y - 0.002, white); jn.disc(c[2], c[3], r.w / 2, y - 0.002, white);
-      cum += L0;
+        RK.quadUV([p[0] + ma[0] * hw, p[1] + ma[1] * hw], [q[0] + mb[0] * hw, q[1] + mb[1] * hw],
+          [q[0] - mb[0] * hw, q[1] - mb[1] * hw], [p[0] - ma[0] * hw, p[1] - ma[1] * hw], y, rc, 0, 0);
+      } else RK.segUV(c[0], c[1], c[2], c[3], r.w, y, rc, 0, 0);
+      // junction caps
+      RK.disc(c[0], c[1], r.w / 2, y - 0.002, rc); RK.disc(c[2], c[3], r.w / 2, y - 0.002, rc);
+    }
+    if (!paved || t === 'service' || r.w < 4.5 || !r.nodes || r.pts.some(p => Math.abs(p[0]) > BX || Math.abs(p[1]) > BZ)) continue;
+    const cumAt = [0]; for (let i = 1; i < r.pts.length; i++) cumAt.push(cumAt[i - 1] + Math.hypot(r.pts[i][0] - r.pts[i - 1][0], r.pts[i][1] - r.pts[i - 1][1]));
+    const total = cumAt[cumAt.length - 1], clear = r.w / 2 + 2.5;
+    // open stretches between junctions (and the way's own ends)
+    const stops = [0, total]; r.nodes.forEach((n, i) => { if (nodeUse.get(n) > 1) stops.push(cumAt[i]); });
+    stops.sort((a, b) => a - b);
+    const my = y + 0.004;
+    for (let k = 0; k < stops.length - 1; k++) {
+      const a = stops[k] + clear, b = stops[k + 1] - clear; if (b - a < DASH) continue;
+      // dashes centred in the stretch so both ends look the same
+      const n = Math.floor((b - a + GAP) / (DASH + GAP)), start = a + (b - a - (n * (DASH + GAP) - GAP)) / 2;
+      for (let d = 0; d < n; d++) markStrip(r, mit, cumAt, my, 0, start + d * (DASH + GAP), start + d * (DASH + GAP) + DASH);
+      if (r.w >= 5) for (const side of [-1, 1]) markStrip(r, mit, cumAt, my, side * (r.w / 2 - 0.35), a, b);
     }
   }
   const sleepers = [], balC = col('#a99a88'), railC = col('#6b7078');
@@ -314,295 +344,77 @@ export async function createGame(o) {
       const sm = new THREE.Mesh(pg, new THREE.MeshStandardMaterial({ map: tex, roughness: 1 })); sm.position.y = 0.02; sm.receiveShadow = true; scene.add(sm);
     }
   }
-  const roadMat = map => mobile
-    ? new THREE.MeshLambertMaterial({ map, vertexColors: true })
-    : new THREE.MeshStandardMaterial({ map, vertexColors: true, roughness: 0.78, metalness: 0.04 });
-  RD.major.meshes(roadMat(TX.asphaltMajor), false, true); RD.plain.meshes(roadMat(TX.asphaltPlain), false, true); RD.dirt.meshes(roadMat(TX.dirtRoad), false, true);
-  JN.major.meshes(roadMat(TX.asphaltJointMajor), false, true); JN.plain.meshes(roadMat(TX.asphaltJointPlain), false, true); JN.dirt.meshes(roadMat(TX.dirtJoint), false, true);
+  RK.meshes(mobile ? new THREE.MeshLambertMaterial({ vertexColors: true }) : new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85, metalness: 0 }), false, true);
+  // markings sit 4 mm above the asphalt: polygon offset keeps them from z-fighting at range
+  const markMat = mobile ? new THREE.MeshLambertMaterial({ vertexColors: true }) : new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.6, metalness: 0 });
+  markMat.polygonOffset = true; markMat.polygonOffsetFactor = -1; markMat.polygonOffsetUnits = -4;
+  MK.meshes(markMat, false, true, 0, DETAIL_R + 1);
   const waterMat = makeWaterMaterial();
   { const WB = new ChunkB(); const wc = col('#ffffff');
     for (const w of W.waters) WB.poly(w, 0.045, wc);
     for (const w of W.waterLines) for (let i = 0; i < w.pts.length - 1; i++) { const c = clipSeg(w.pts[i][0], w.pts[i][1], w.pts[i + 1][0], w.pts[i + 1][1]); if (c) { WB.seg(c[0], c[1], c[2], c[3], w.w, 0.045, wc); WB.disc(c[2], c[3], w.w / 2, 0.045, wc); } }
     WB.meshes(waterMat, false, false, 1); }
   const byChunk = (list, ix, iz) => { const mp = new Map(); for (const w of list) { const k = ck(w[ix], w[iz]); if (!mp.has(k)) mp.set(k, []); mp.get(k).push(w); } return mp; };
-  const mkInst = (list, geo, mat, y0 = 0, shadow = false, colorFn = null) => {
+  const mkInst = (list, geo, mat, y0 = 0, shadow = false, colorFn = null, r = CULL_R) => {
     if (!list.length) return null;
     const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler(), v = new THREE.Vector3(), s1 = new THREE.Vector3(1, 1, 1), s2 = new THREE.Vector3();
     for (const [k, part] of byChunk(list, 0, 2)) {
       const im = new THREE.InstancedMesh(geo, mat, part.length);
       part.forEach((w, i) => { q.setFromEuler(e.set(0, w[3], 0)); m4.compose(v.set(w[0], w[1] + y0, w[2]), q, w[4] ? s2.set(1, w[4], 1) : s1); im.setMatrixAt(i, m4); if (colorFn) im.setColorAt(i, colorFn(w)); });
       im.computeBoundingSphere(); im.castShadow = shadow; im.receiveShadow = true; scene.add(im);
-      const p = k.split(','); trackChunk(im, +p[0], +p[1]);
+      const p = k.split(','); trackChunk(im, +p[0], +p[1], r);
     }
   };
-  mkInst(sleepers, new THREE.BoxGeometry(2.3, 0.1, 0.26), matCol(0x5e4636, { roughness: 0.9 }));
+  mkInst(sleepers, new THREE.BoxGeometry(2.3, 0.1, 0.26), matCol(0x5e4636, { roughness: 0.9 }), 0, false, null, DETAIL_R);
   const boardMats = [0, 1, 2, 3, 4, 5].map(i => i === 2 ? new THREE.MeshStandardMaterial({ color: 0xb4c98a, map: TX.ground, roughness: 1 }) : new THREE.MeshStandardMaterial({ color: 0x8c5e3a, map: TX.wood, roughness: 0.7 }));
   const board = new THREE.Mesh(new THREE.BoxGeometry(BX * 2 + 6, 8, BZ * 2 + 6), boardMats); board.position.y = sat ? -4.08 : -4.001; board.receiveShadow = true; scene.add(board);
   const plinth = new THREE.Mesh(new THREE.BoxGeometry(BX * 2 + 40, 3, BZ * 2 + 40), std(0x4e3522, { map: TX.wood, roughness: 0.6 })); plinth.position.y = -9.5; scene.add(plinth);
 
-  // ---------- buildings ----------
-  // Urban city look: plaster/brick façades, mostly flat roofs, compound fences (ခြံစည်းရိုး).
-  // Kenney shop GLBs only on well-proportioned major-road lots.
+  // ---------- buildings & compound fences ----------
+  // Every OSM building is built from the Kenney suburban kit (homes.js): one fitted house per lot,
+  // a grid of houses on big lots, the oriented bounding rectangle for odd shapes. OSM has the
+  // houses but not the compounds (ခြံ) around them, so plots.js derives each yard from the real
+  // footprints and streets, and every compound gets a bare-earth yard and a fence (ခြံစည်းရိုး)
+  // with its gate on the street side: wards read as rows of fenced compounds, as on the ground.
   msg('အဆောက်အအုံများ ဆောက်နေသည်…', 0.78);
   await yieldToPaint();
-  const WB = new ChunkB(), RFc = new ChunkB(), AW = new ChunkB(), PL = new ChunkB(), FN = new ChunkB();
-  const TILE = { bamboo: 0, wood: 1, plaster: 2 };
-  const R_TIN = 0, R_CONC = 1, R_PLAIN = 2;
-  const winLit = [], winDark = [], frames = [], doors = [], posts = [], pillars = [];
-  const WIN_CAP = mobile ? 5000 : 16000;
-  const FENCE_CAP = mobile ? 900 : 2200;
-  let fenceN = 0;
-  const houseA = assets.houses || [], houseLists = houseA.map(() => []);
-  const CITY_WALLS = ['#f2efe8', '#ebe6dc', '#e8e0d4', '#f5f0e6', '#ddd8ce', '#e4ebe8', '#f0e8e0', '#e8ecf0', '#f7f3ea'];
-  const FENCE_COLS = ['#e8e4dc', '#ddd8d0', '#f0ece4', '#d4cfc6', '#ebe6de', '#cfc9c0'];
-  const outset = (ring, oh) => {
-    const [ox, oz] = centroid(ring);
-    return ring.map(([x, z]) => { const dx = x - ox, dz = z - oz, L = Math.hypot(dx, dz) || 1; return [x + dx / L * oh, z + dz / L * oh]; });
-  };
-  const addCompoundFence = (pts, cx, cz, hb, doorEdge) => {
-    if (fenceN >= FENCE_CAP || h01(hb, 16) >= (mobile ? 0.7 : 0.85)) return;
-    fenceN++;
-    const yard = 1.4 + h01(hb, 17) * 1.6;
-    const ring = outset(pts, yard);
-    const fh = 1.35 + h01(hb, 18) * 0.45;
-    const fc = col(pickH(FENCE_COLS, hb, 19));
-    const gateW = 2.2;
-    const F = FN.at(cx, cz); F.tile = R_CONC;
-    for (let i = 0; i < ring.length; i++) {
-      const a = ring[i], c = ring[(i + 1) % ring.length];
-      const dx = c[0] - a[0], dz = c[1] - a[1], L = Math.hypot(dx, dz); if (L < 0.3) continue;
-      let nx = dz / L, nz = -dx / L;
-      if (pip((a[0] + c[0]) / 2 + nx * 0.1, (a[1] + c[1]) / 2 + nz * 0.1, ring)) { nx = -nx; nz = -nz; }
-      const isGateEdge = i === doorEdge || (doorEdge < 0 && i === 0);
-      if (isGateEdge && L > gateW + 1.2) {
-        const mid = 0.5, half = (gateW * 0.5) / L;
-        const t0 = mid - half, t1 = mid + half;
-        const p1 = [a[0] + dx * t0, a[1] + dz * t0], p2 = [a[0] + dx * t1, a[1] + dz * t1];
-        const wallSeg = (q0, q1) => {
-          const ll = Math.hypot(q1[0] - q0[0], q1[1] - q0[1]); if (ll < 0.15) return;
-          F.quad([q0[0], 0, q0[1]], [q1[0], 0, q1[1]], [q1[0], fh, q1[1]], [q0[0], fh, q0[1]], fc, [nx, 0, nz]);
-        };
-        wallSeg([a[0], a[1]], p1); wallSeg(p2, [c[0], c[1]]);
-        pillars.push([p1[0], 0, p1[1], 0, fh + 0.25]);
-        pillars.push([p2[0], 0, p2[1], 0, fh + 0.25]);
-      } else {
-        F.quad([a[0], 0, a[1]], [c[0], 0, c[1]], [c[0], fh, c[1]], [a[0], fh, a[1]], fc, [nx, 0, nz]);
-      }
-      pillars.push([a[0], 0, a[1], 0, fh + 0.15]);
-    }
-  };
+  // Detail radius sits just past the fog start, so the LOD swap happens in the haze.
+  const homes = assets.homes ? createHomes(Array.isArray(assets.homes) ? assets.homes : [assets.homes], {
+    mobile, shadows: best && !mobile, radius: mobile ? 130 : best ? 200 : 170,
+    walls: WALLS.concat(['#ffffff', '#f4efe6', '#efe9dd']), roofs: TIN, fade: [scene.fog.far * 0.45, scene.fog.far * 0.8],
+  }) : null;
+  const fences = createFences(assets.fence, { mobile, shadows: best && !mobile, nearR: mobile ? 55 : 90, chunk: CHUNK, track: (me, ix, iz) => trackChunk(me, ix, iz, DETAIL_R + 1) });
+  // index of the footprint edge nearest a road (the street front), -1 if every edge is tiny
+  const frontEdge = pts => { let e = -1, dmin = 1e9; for (let i = 0; i < pts.length; i++) { const a = pts[i], c = pts[(i + 1) % pts.length]; if (Math.hypot(c[0] - a[0], c[1] - a[1]) < 2.4) continue; const d = roadClear((a[0] + c[0]) / 2, (a[1] + c[1]) / 2); if (d < dmin) { dmin = d; e = i; } } return e; };
   let bDone = 0;
-  for (const b of W.buildings) {
+  if (homes) for (const b of W.buildings) {
     const pts = b.pts; if (pts.length < 3) continue;
-    const ar = area(pts); if (ar < 6) continue;
-    const t = b.tags, [cx, cz] = centroid(pts);
-    const quad = pts.length === 4;
-    let fLu = 0, fLv = 0;
-    if (quad) { const q0 = Math.hypot(pts[1][0] - pts[0][0], pts[1][1] - pts[0][1]), q1 = Math.hypot(pts[2][0] - pts[1][0], pts[2][1] - pts[1][1]); fLu = Math.max(q0, q1); fLv = Math.min(q0, q1); }
-    const asp = fLv > 0.5 ? fLu / fLv : 1;
-    const nr = houseA.length && quad && ar < 260 ? nearSeg(cx, cz) : nearSeg(cx, cz);
-    const roadD = nr[1] ? nr[0] : 1e9, major = !!(nr[1] && MAJOR.has(nr[1][6].type)), drive = !!(nr[1] && DRIVE.has(nr[1][6].type));
-    const hb = bhash(cx, cz);
-    // City shop kits on major-road lots that match the model proportions.
-    if (houseA.length && quad && ar < 260 && nr[1] && nr[0] < 9 && MAJOR.has(nr[1][6].type)) {
-      const [p0, p1, p2] = pts, e0 = Math.hypot(p1[0] - p0[0], p1[1] - p0[1]), e1 = Math.hypot(p2[0] - p1[0], p2[1] - p1[1]);
-      const ua = e0 >= e1 ? [p1[0] - p0[0], p1[1] - p0[1]] : [p2[0] - p1[0], p2[1] - p1[1]], lu = Math.max(e0, e1), lv = Math.min(e0, e1);
-      let th = Math.atan2(-ua[1] / lu, ua[0] / lu);
-      const fz = [Math.sin(th), Math.cos(th)]; if (roadClear(cx + fz[0] * 6, cz + fz[1] * 6) > roadClear(cx - fz[0] * 6, cz - fz[1] * 6)) th += Math.PI;
-      const k = Math.floor(h01(hb, 21) * houseA.length) % houseA.length, sz = houseA[k].size;
-      const sx = lu / Math.max(sz.x, 0.1), szz = lv / Math.max(sz.z, 0.1);
-      if (Math.max(sx, szz) / Math.max(1e-3, Math.min(sx, szz)) < 1.35) {
-        const su = Math.min(sx, szz) * (0.98 + h01(hb, 22) * 0.04);
-        houseLists[k].push([cx, cz, th, su, su, su]);
-        let doorEdge = -1, dmin = 1e9;
-        for (let i = 0; i < pts.length; i++) { const a = pts[i], c = pts[(i + 1) % pts.length]; if (Math.hypot(c[0] - a[0], c[1] - a[1]) < 2.4) continue; const d = roadClear((a[0] + c[0]) / 2, (a[1] + c[1]) / 2); if (d < dmin) { dmin = d; doorEdge = i; } }
-        addCompoundFence(pts, cx, cz, hb, doorEdge);
-        if ((++bDone & 127) === 0) await yieldToPaint();
-        continue;
-      }
-    }
-    // Urban mix: concrete blocks, brick townhouses, street shops — no stilts / bamboo huts.
-    const type = (ar >= 280 || (!quad && ar >= 160)) ? 'block'
-      : (quad && asp >= 1.55 && drive && roadD < 12 && ar >= 36) ? 'shop'
-      : ar >= 140 ? 'hall'
-      : h01(hb, 0) < 0.42 ? 'brick'
-      : 'house';
-    const lowRise = type === 'house' || type === 'brick';
-    const y0 = 0;
-    let levels = type === 'shop' ? 2
-      : type === 'block' ? Math.min(mobile ? 4 : 7, parseInt(t['building:levels']) || (ar > 400 ? 3 : 2))
-      : type === 'hall' ? (h01(hb, 2) < 0.35 ? 2 : 1)
-      : (major && roadD < 14 && h01(hb, 2) < 0.4 ? 2 : 1);
-    if (mobile && levels > 3) levels = 3;
-    const storeyH = type === 'shop' ? 3.3 : type === 'hall' ? 3.6 : type === 'block' ? 3.1 : 2.95;
-    const h = parseFloat(t.height) || (levels * storeyH + 0.35);
-    const brickWall = type === 'brick' || (type === 'house' && h01(hb, 3) < 0.25);
-    const kind = 'plaster';
-    const wc = brickWall ? col(pickH(BRICKS, hb, 9)) : col(pickH(CITY_WALLS, hb, 9));
-    // City roofs are mostly flat concrete; a few low skillions on shops/houses.
-    let roof = (type === 'block' || type === 'hall' || type === 'brick') ? 'flat'
-      : type === 'shop' ? (h01(hb, 4) < 0.55 ? 'flat' : 'skillion')
-      : (h01(hb, 4) < 0.72 ? 'flat' : 'skillion');
-    const B = WB.at(cx, cz), RB = RFc.at(cx, cz), UB = RB, CB = RB;
-    B.tile = TILE[kind];
-    let doorEdge = -1, dmin = 1e9;
-    for (let i = 0; i < pts.length; i++) { const a = pts[i], c = pts[(i + 1) % pts.length]; if (Math.hypot(c[0] - a[0], c[1] - a[1]) < 2.4) continue; const d = roadClear((a[0] + c[0]) / 2, (a[1] + c[1]) / 2); if (d < dmin) { dmin = d; doorEdge = i; } }
-    // Concrete plinth / sidewalk strip at the base.
-    {
-      const pb = PL.at(cx, cz); pb.tile = R_CONC;
-      const pad = outset(pts, 0.15), pc = col(pickH(PLINTH, hb, 11));
-      pb.poly(pad, 0.06, pc); pb.poly(pts, 0.12, pc);
-      for (let i = 0; i < pts.length; i++) {
-        const a = pts[i], c = pts[(i + 1) % pts.length], pa = pad[i], pc2 = pad[(i + 1) % pad.length];
-        pb.quad([pa[0], 0, pa[1]], [pc2[0], 0, pc2[1]], [c[0], 0.12, c[1]], [a[0], 0.12, a[1]], pc, UP);
-      }
-    }
-    let cum = 0;
-    for (let i = 0; i < pts.length; i++) {
-      const a = pts[i], c = pts[(i + 1) % pts.length];
-      const dx = c[0] - a[0], dz = c[1] - a[1], L = Math.hypot(dx, dz); if (L < 0.05) continue;
-      let nx = dz / L, nz = -dx / L;
-      if (pip((a[0] + c[0]) / 2 + nx * 0.15, (a[1] + c[1]) / 2 + nz * 0.15, pts)) { nx = -nx; nz = -nz; }
-      const u0 = cum / 2, u1 = (cum + L) / 2; cum += L;
-      const front = type === 'shop' && i === doorEdge;
-      const wallC = front ? wc.clone().multiplyScalar(0.82) : wc;
-      const baseY = 0.12;
-      const wallTop = front ? storeyH : h;
-      B.quad([a[0], baseY, a[1]], [c[0], baseY, c[1]], [c[0], wallTop, c[1]], [a[0], wallTop, a[1]], wallC, [nx, 0, nz], [u0, baseY / 2], [u1, baseY / 2], [u1, wallTop / 2], [u0, wallTop / 2]);
-      if (front && levels > 1) B.quad([a[0], wallTop, a[1]], [c[0], wallTop, c[1]], [c[0], h, c[1]], [a[0], h, a[1]], wc, [nx, 0, nz], [u0, wallTop / 2], [u1, wallTop / 2], [u1, h / 2], [u0, h / 2]);
-      // Floor band between storeys on 2+ level city buildings.
-      if (levels > 1 && !front) {
-        for (let f = 1; f < levels; f++) {
-          const by = f * storeyH;
-          B.quad([a[0] + nx * 0.03, by - 0.08, a[1] + nz * 0.03], [c[0] + nx * 0.03, by - 0.08, c[1] + nz * 0.03], [c[0] + nx * 0.03, by + 0.08, c[1] + nz * 0.03], [a[0] + nx * 0.03, by + 0.08, a[1] + nz * 0.03], col('#d8d0c4'), [nx, 0, nz], [0, 0], [1, 0], [1, 0.1], [0, 0.1]);
-        }
-      }
-      const rot = Math.atan2(nx, nz);
-      if (i === doorEdge) {
-        doors.push([a[0] + dx * 0.5 + nx * 0.06, baseY + 1.05, a[1] + dz * 0.5 + nz * 0.06, rot]);
-        if (type === 'shop' && L > 2.6) {
-          const ay = Math.min(h - 0.2, storeyH * 0.92);
-          const depth = 1.15, drop = 0.12, awC = col(pickH(AWNINGS, hb, 13));
-          AW.at(cx, cz).quad(
-            [a[0] + dx * 0.04 + nx * 0.04, ay, a[1] + dz * 0.04 + nz * 0.04],
-            [c[0] - dx * 0.04 + nx * 0.04, ay, c[1] - dz * 0.04 + nz * 0.04],
-            [c[0] - dx * 0.04 + nx * depth, ay - drop, c[1] - dz * 0.04 + nz * depth],
-            [a[0] + dx * 0.04 + nx * depth, ay - drop, a[1] + dz * 0.04 + nz * depth],
-            awC, [0, -1, 0], [0, 0], [1, 0], [1, 1], [0, 1]
-          );
-        }
-      }
-      const wantWin = L > 2.4 && winLit.length + winDark.length < WIN_CAP && !(mobile && (hb % 5) === 4);
-      if (wantWin) {
-        let n = lowRise ? Math.floor(L / (front ? 2.2 : 2.5)) : Math.floor((L - 0.5) / 2.3);
-        if (mobile) n = Math.min(n, front ? 3 : 2);
-        if (i === doorEdge && n % 2 === 1) n--;
-        n = Math.max(0, n);
-        for (let k = 0; k < n; k++) for (let f = 0; f < levels; f++) {
-          if (front && f === 0) continue;
-          const tt = (k + 0.5) / Math.max(n, 1), wx = a[0] + dx * tt, wz = a[1] + dz * tt;
-          const wy = baseY + 1.55 + f * storeyH;
-          frames.push([wx + nx * 0.03, wy, wz + nz * 0.03, rot]);
-          (h01(hb, 20 + k + f * 3) < 0.28 ? winLit : winDark).push([wx + nx * 0.075, wy, wz + nz * 0.075, rot]);
-        }
-      }
-    }
-    // Flat concrete roof (city default) or low skillion.
-    const rc = satRoof(cx, cz) || col(pickH(['#d8d4cc', '#cfc9c0', '#e0dcd4', '#c4c0b8', '#d2cec6'], hb, 14));
-    if (quad && roof === 'skillion' && ar < 400) {
-      const [p0, p1, p2] = pts;
-      const e0 = Math.hypot(p1[0] - p0[0], p1[1] - p0[1]), e1 = Math.hypot(p2[0] - p1[0], p2[1] - p1[1]);
-      const [a, bb, c, d] = e0 >= e1 ? pts : [pts[1], pts[2], pts[3], pts[0]];
-      const lu = Math.hypot(bb[0] - a[0], bb[1] - a[1]), lv = Math.hypot(d[0] - a[0], d[1] - a[1]);
-      const ux = [(bb[0] - a[0]) / lu, (bb[1] - a[1]) / lu], vx = [(d[0] - a[0]) / lv, (d[1] - a[1]) / lv];
-      const pitch = 0.18, oh = 0.4, rh = lv * pitch + 0.2, sl = rh / (lv / 2), ey = h - sl * oh;
-      const P = (p, du, dv, y) => [p[0] + ux[0] * du + vx[0] * dv, y, p[1] + ux[1] * du + vx[1] * dv];
-      const Ah = P(a, -oh, -oh, ey + rh), Bh = P(bb, oh, -oh, ey + rh), C = P(c, oh, oh, ey), D = P(d, -oh, oh, ey);
-      const ref = (...q) => [q.reduce((s, p) => s + p[0], 0) / q.length - cx, q.reduce((s, p) => s + p[1], 0) / q.length - (h - 1), q.reduce((s, p) => s + p[2], 0) / q.length - cz];
-      const uv = p => [(p[0] * ux[0] + p[2] * ux[1]) / 1.1, (p[0] * vx[0] + p[2] * vx[1]) / 1.1 + p[1] / 1.1];
-      const rtri = (q1, q2, q3) => { RB.tile = R_CONC; RB.tri(q1, q2, q3, rc, ref(q1, q2, q3), uv(q1), uv(q2), uv(q3)); };
-      rtri(Ah, Bh, C); rtri(Ah, C, D);
-    } else {
-      CB.tile = R_CONC;
-      const rim = outset(pts, 0.25);
-      CB.poly(rim, h - 0.35, col('#d0cbc2'));
-      for (let i = 0; i < pts.length; i++) {
-        const a = pts[i], c = pts[(i + 1) % pts.length], ra = rim[i], rb = rim[(i + 1) % rim.length];
-        const mx = (a[0] + c[0]) / 2, mz = (a[1] + c[1]) / 2;
-        CB.quad([ra[0], h - 0.35, ra[1]], [rb[0], h - 0.35, rb[1]], [c[0], h, c[1]], [a[0], h, a[1]], wc, [cx - mx, 0, cz - mz]);
-      }
-      CB.poly(pts.map(p => [p[0], p[1]]), h, rc);
-    }
-    // Compound fence (ခြံစည်းရိုး) around houses/brick lots — concrete wall + gate on the street side.
-    if ((type === 'house' || type === 'brick') && ar < 240) addCompoundFence(pts, cx, cz, hb, doorEdge);
+    const ar = area(pts); if (ar < 4) continue;
+    const [cx, cz] = centroid(pts), hb = bhash(cx, cz), nr = nearSeg(cx, cz);
+    // on the rural edge and along dirt lanes about half the small homes go up on stilts
+    const rural = !nr[1] || nr[0] > 14 || nr[1][7] || !DRIVE.has(nr[1][6].type) || Math.hypot(cx, cz) > 700;
+    const lift = rural && ar < 150 && h01(hb, 30) < 0.5 ? 1.7 + h01(hb, 31) * 0.5 : 0;
+    homes.place(pts, hb, frontEdge, lift);
     if ((++bDone & 127) === 0) await yieldToPaint();
   }
-  // All walls share one atlased material. The UVs tile (u = cum/2), so the cell lookup needs
-  // fract(); that breaks the GPU's derivative-based mip choice, hence the explicit textureGrad.
-  // The derivatives are clamped so a distant wall can never pick a mip coarse enough to bleed
-  // between atlas cells.
-  const atlasHook = (mat) => {
-    mat.onBeforeCompile = sh => {
-      sh.vertexShader = 'attribute float aTile;\nvarying float vTile;\n' +
-        sh.vertexShader.replace('#include <uv_vertex>', '#include <uv_vertex>\n\tvTile = aTile;');
-      sh.fragmentShader = 'varying float vTile;\n' +
-        sh.fragmentShader.replace('#include <map_fragment>', [
-          '#ifdef USE_MAP',
-          '  vec2 cell = vec2( mod( vTile, 2.0 ), floor( vTile * 0.5 ) ) * 0.5;',
-          '  vec2 dx = clamp( dFdx( vMapUv ) * 0.5, -0.05, 0.05 );',
-          '  vec2 dy = clamp( dFdy( vMapUv ) * 0.5, -0.05, 0.05 );',
-          '  diffuseColor *= textureGrad( map, cell + fract( vMapUv ) * 0.5, dx, dy );',
-          '#endif',
-        ].join('\n'));
-    };
-    return mat;
-  };
-  const wallMat = atlasHook(matCol(0xffffff, { map: TX.wallAtlas, vertexColors: true, roughness: 0.9 }));
-  houseA.forEach((h, i) => houseLists[i].length && instancedFromAsset(h, houseLists[i], scene, trackChunk));
-  WB.meshes(wallMat, !mobile, true);
-  PL.meshes(atlasHook(matCol(0xffffff, { map: TX.roofAtlas, vertexColors: true, roughness: 0.95 })), false, true);
-  FN.meshes(atlasHook(matCol(0xffffff, { map: TX.roofAtlas, vertexColors: true, roughness: 0.92 })), false, true);
-  AW.meshes(mobile ? new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide }) : new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85, side: THREE.DoubleSide }), false, false);
-  // Roof tops, soffits and flat-roof slabs in one family. roughness/metalness come from the
-  // ORM atlas so tin keeps its sheen next to matte concrete under a single material.
-  let roofMat;
-  if (mobile) {
-    roofMat = atlasHook(new THREE.MeshLambertMaterial({ map: TX.roofAtlas, vertexColors: true }));
-  } else {
-    roofMat = std(0xffffff, { map: TX.roofAtlas, roughnessMap: TX.roofORM, metalnessMap: TX.roofORM, vertexColors: true, roughness: 1, metalness: 1 });
-    roofMat.onBeforeCompile = sh => {
-      sh.vertexShader = 'attribute float aTile;\nvarying float vTile;\n' +
-        sh.vertexShader.replace('#include <uv_vertex>', '#include <uv_vertex>\n\tvTile = aTile;');
-      const cell = (uv, n) => [
-        `  vec2 cell${n} = vec2( mod( vTile, 2.0 ), floor( vTile * 0.5 ) ) * 0.5;`,
-        `  vec2 dx${n} = clamp( dFdx( ${uv} ) * 0.5, -0.05, 0.05 );`,
-        `  vec2 dy${n} = clamp( dFdy( ${uv} ) * 0.5, -0.05, 0.05 );`,
-      ].join('\n');
-      sh.fragmentShader = 'varying float vTile;\n' + sh.fragmentShader
-        .replace('#include <map_fragment>', ['#ifdef USE_MAP', cell('vMapUv', 'M'),
-          '  diffuseColor *= textureGrad( map, cellM + fract( vMapUv ) * 0.5, dxM, dyM );', '#endif'].join('\n'))
-        .replace('#include <roughnessmap_fragment>', ['float roughnessFactor = roughness;', '#ifdef USE_ROUGHNESSMAP',
-          cell('vRoughnessMapUv', 'R'),
-          '  roughnessFactor *= textureGrad( roughnessMap, cellR + fract( vRoughnessMapUv ) * 0.5, dxR, dyR ).g;', '#endif'].join('\n'))
-        .replace('#include <metalnessmap_fragment>', ['float metalnessFactor = metalness;', '#ifdef USE_METALNESSMAP',
-          cell('vMetalnessMapUv', 'E'),
-          '  metalnessFactor *= textureGrad( metalnessMap, cellE + fract( vMetalnessMapUv ) * 0.5, dxE, dyE ).b;', '#endif'].join('\n'));
-    };
-  }
-  RFc.meshes(roofMat, !mobile, true);
-  const litMat = new THREE.MeshBasicMaterial({ color: 0x3a4452, map: TX.windowLit });
-  const WINC = ['#ffffff', '#ffffff', '#ffe2b8', '#ffd0a0', '#d9ecff', '#e8f6ff'].map(c => col(c));
-  const winGeo = new THREE.PlaneGeometry(0.78, 0.95);
-  if (frames.length) mkInst(frames, new THREE.BoxGeometry(0.98, 1.14, 0.06), matCol(0x5a3d2b, { roughness: 0.7 }));
-  mkInst(winLit, winGeo, litMat, 0, false, w => WINC[Math.floor(Math.abs(w[0] * 3.1 + w[2] * 1.7)) % WINC.length]);
-  mkInst(winDark, winGeo, mobile ? new THREE.MeshBasicMaterial({ color: 0x34404d }) : std(0x34404d, { roughness: 0.15, metalness: 0.5 }));
-  mkInst(doors, new THREE.BoxGeometry(1.0, 2.1, 0.08), matCol(0x6b4630, { map: TX.wood, roughness: 0.75 }));
-  if (posts.length) { const pg = new THREE.CylinderGeometry(0.11, 0.13, 1, mobile ? 5 : 6); pg.translate(0, 0.5, 0); mkInst(posts, pg, matCol(0x6e5038, { map: TX.wood, roughness: 0.9 }), 0, !mobile); }
-  // Square concrete pillars for compound fence corners / gates.
-  if (pillars.length) {
-    const pg = new THREE.BoxGeometry(0.28, 1, 0.28); pg.translate(0, 0.5, 0);
-    mkInst(pillars, pg, matCol(0xe8e4dc, { roughness: 0.9 }), 0, false);
-  }
+  if (homes) homes.build(scene, matCol(0x7a5a3c, { map: TX.wood, roughness: 0.85 }));
+
+  plots.forEach((pl, i) => {
+    if (!pl) return;
+    // gate: middle of the longest street edge
+    let gate = -1, gl = 3.4;
+    pl.l.forEach((l, k) => { if (l !== 'r') return; const a = pl.p[k], c = pl.p[(k + 1) % pl.p.length], L = Math.hypot(c[0] - a[0], c[1] - a[1]); if (L > gl) { gl = L; gate = k; } });
+    pl.l.forEach((l, k) => {
+      // a fence shared with a neighbour is drawn once, by the lower index
+      if (typeof l === 'number' && l < i && plots[l]) return;
+      const a = pl.p[k], c = pl.p[(k + 1) % pl.p.length];
+      if (k !== gate) { fences.add(a[0], a[1], c[0], c[1]); return; }
+      const L = Math.hypot(c[0] - a[0], c[1] - a[1]), t0 = 0.5 - 1.1 / L, t1 = 0.5 + 1.1 / L;
+      fences.add(a[0], a[1], a[0] + (c[0] - a[0]) * t0, a[1] + (c[1] - a[1]) * t0);
+      fences.add(a[0] + (c[0] - a[0]) * t1, a[1] + (c[1] - a[1]) * t1, c[0], c[1]);
+    });
+  });
+  fences.build(scene, 0xc3714e);
 
   // ---------- pagodas ----------
   const PM = makePagodaMats(TX);
@@ -613,50 +425,36 @@ export async function createGame(o) {
     g.position.set(p.x, 0, p.z); scene.add(g);
   }
 
-  // ---------- trees & bushes ----------
-  // Green-area trees go in now so the town is not bare at first ride. Roadside trees, scatter,
-  // and bushes are deferred until after ready so the build freeze ends sooner on phones.
+  // ---------- trees & planters ----------
+  // Kenney kit trees and planters only. Green-area trees go in now so the town is not bare at
+  // first ride; roadside trees, scatter and planters are deferred until after ready so the build
+  // freeze ends sooner on phones. List entries: [x, z, rotY, scale].
   const TREE_CAP = mobile ? 450 : 2800;
   const GREEN_CAP = mobile ? 350 : 2600;
-  const BUSH_CAP = mobile ? 180 : 1500;
+  const PLANTER_CAP = mobile ? 180 : 1500;
+  const TREE_R = Math.max(DETAIL_R, CULL_R - 2);
   const okTree = (x, z) => Math.abs(x) < BX - 2 && Math.abs(z) < BZ - 2 && !blocked(x, z) && roadClear(x, z) > 1.8 && railClear(x, z) > 3;
   const trees = [];
   for (const g of W.greens) {
     if (!g.trees) continue;
     const ar = area(g.pts), n = Math.min(mobile ? 40 : 300, Math.floor(ar / 900 * g.trees));
     let x0 = 1e9, z0 = 1e9, x1 = -1e9, z1 = -1e9; for (const p of g.pts) { x0 = Math.min(x0, p[0]); z0 = Math.min(z0, p[1]); x1 = Math.max(x1, p[0]); z1 = Math.max(z1, p[1]); }
-    for (let i = 0, tries = 0; i < n && tries < n * 4 && trees.length < GREEN_CAP; tries++) { const x = x0 + rnd() * (x1 - x0), z = z0 + rnd() * (z1 - z0); if (pip(x, z, g.pts) && okTree(x, z)) { trees.push([x, z, rnd() < g.palm ? 1 : 0, 0.75 + rnd() * 0.55]); i++; } }
+    for (let i = 0, tries = 0; i < n && tries < n * 4 && trees.length < GREEN_CAP; tries++) { const x = x0 + rnd() * (x1 - x0), z = z0 + rnd() * (z1 - z0); if (pip(x, z, g.pts) && okTree(x, z)) { trees.push([x, z, rnd() * 6.28, 0.8 + rnd() * 0.5]); i++; } }
   }
   await yieldToPaint();
-  const m4t = new THREE.Matrix4(), qt = new THREE.Quaternion(), et = new THREE.Euler(), vt = new THREE.Vector3(), st = new THREE.Vector3(), ct = new THREE.Color();
-  const placeTrees = (list, geo, mat, colors) => {
-    if (!list.length) return;
-    for (const [k, part] of byChunk(list, 0, 1)) {
-      const im = new THREE.InstancedMesh(geo, mat, part.length);
-      part.forEach((t, i) => { qt.setFromEuler(et.set(0, t[2], 0)); m4t.compose(vt.set(t[0], 0, t[1]), qt, st.set(t[3], t[3], t[3])); im.setMatrixAt(i, m4t); if (colors) im.setColorAt(i, ct.set(colors[Math.floor(Math.abs(t[0] * 7 + t[1] * 3)) % colors.length])); });
-      im.computeBoundingSphere(); im.castShadow = !mobile; im.receiveShadow = true; scene.add(im);
-      const p = k.split(','); trackChunk(im, +p[0], +p[1]);
-    }
-  };
-  const vcTree = o => matCol(0xffffff, Object.assign({ vertexColors: true, roughness: 0.85 }, o));
-  const palmGeo = assets.palm ? null : palmGeometries();
-  const roundGeo = assets.tree ? null : roundTreeGeometries();
   const treeA = assets.tree ? (Array.isArray(assets.tree) ? assets.tree : [assets.tree]) : [];
   const plantTrees = list => {
-    const palms = list.filter(t => t[2] === 1).map(t => [t[0], t[1], t[0] * 13.1 % 6.28, t[3]]);
-    const rounds = list.filter(t => t[2] === 0).map(t => [t[0], t[1], t[0] * 7.7 % 6.28, t[3]]);
-    if (assets.palm) instancedFromAsset(assets.palm, palms, scene, trackChunk);
-    else { placeTrees(palms, palmGeo.trunk, vcTree({ roughness: 0.95 })); placeTrees(palms, palmGeo.crown, vcTree({ side: THREE.DoubleSide, roughness: 0.7 }), ['#ffffff', '#f0f5e8', '#e6ecd8']); }
-    if (treeA.length) { const treeLists = treeA.map(() => []); for (const t of rounds) treeLists[Math.floor(Math.abs(t[0] * 11 + t[1] * 5)) % treeA.length].push(t); treeA.forEach((a, i) => treeLists[i].length && instancedFromAsset(a, treeLists[i], scene, trackChunk)); }
-    else { placeTrees(rounds, roundGeo.trunk, vcTree({ roughness: 0.95 })); placeTrees(rounds, roundGeo.canopy, vcTree({ flatShading: true, roughness: 0.8 }), ['#6fae5a', '#86bf64', '#5b9a52', '#9cc56b', '#7aa84e']); }
+    if (!treeA.length) return;
+    const lists = treeA.map(() => []);
+    for (const t of list) lists[Math.floor(Math.abs(t[0] * 11 + t[1] * 5)) % treeA.length].push(t);
+    // slim kit conifers are a pixel or two past ~600 m, so they stop short of the full ring
+    treeA.forEach((a, i) => lists[i].length && instancedFromAsset(a, lists[i], scene, (im, ix, iz) => trackChunk(im, ix, iz, TREE_R)));
   };
   plantTrees(trees);
-  const bushMat = vcTree({ flatShading: true });
-  const bushGeo = bushGeometry();
-  const BUSH_COLS = ['#6fae5a', '#5b9a52', '#d9488f', '#86bf64', '#e0609a', '#7aa84e'];
-  const plantBushes = list => placeTrees(list, bushGeo, bushMat, BUSH_COLS);
+  const plantPlanters = list => { if (assets.planter && list.length) instancedFromAsset(assets.planter, list, scene, (im, ix, iz) => trackChunk(im, ix, iz, DETAIL_R)); };
   const deferDecor = () => {
     if (disposed) return;
+    const firstNew = scene.children.length;
     const extra = [];
     const roadStep = mobile ? 36 : 18;
     for (const s of roadSegs) {
@@ -667,24 +465,25 @@ export async function createGame(o) {
         if (rnd() < (mobile ? 0.7 : 0.5)) continue;
         const side = rnd() < 0.5 ? -1 : 1, off = r.w / 2 + 2.4 + rnd() * 2;
         const x = s[0] + dx * d / L - dz / L * side * off, z = s[1] + dz * d / L + dx / L * side * off;
-        if (okTree(x, z)) extra.push([x, z, rnd() < 0.4 ? 1 : 0, 0.7 + rnd() * 0.45]);
+        if (okTree(x, z)) extra.push([x, z, rnd() * 6.28, 0.75 + rnd() * 0.45]);
       }
     }
     const scatterN = mobile ? 200 : 900;
     for (let i = 0; i < scatterN && trees.length + extra.length < TREE_CAP; i++) {
       const x = (rnd() * 2 - 1) * (BX - 4), z = (rnd() * 2 - 1) * (BZ - 4);
-      if (okTree(x, z) && roadClear(x, z) > 4) extra.push([x, z, rnd() < 0.6 ? 1 : 0, 0.8 + rnd() * 0.5]);
+      if (okTree(x, z) && roadClear(x, z) > 4) extra.push([x, z, rnd() * 6.28, 0.8 + rnd() * 0.5]);
     }
     plantTrees(extra);
-    const bushes = [];
-    const bushChance = mobile ? 0.08 : 0.35;
+    const planters = [];
+    const planterChance = mobile ? 0.08 : 0.35;
     for (const b of W.buildings) {
-      if (bushes.length > BUSH_CAP || rnd() > bushChance) continue;
+      if (planters.length > PLANTER_CAP || rnd() > planterChance) continue;
       const [cx, cz] = centroid(b.pts); const p = b.pts[Math.floor(rnd() * b.pts.length)];
       const x = p[0] + (p[0] - cx) * 0.25, z = p[1] + (p[1] - cz) * 0.25;
-      if (!blocked(x, z) && roadClear(x, z) > 0.8) bushes.push([x, z, 0, 0.7 + rnd() * 0.6]);
+      if (!blocked(x, z) && roadClear(x, z) > 0.8) planters.push([x, z, rnd() * 6.28, 0.8 + rnd() * 0.4]);
     }
-    plantBushes(bushes);
+    plantPlanters(planters);
+    freeze(scene.children.slice(firstNew));
     collectMats();
   };
 
@@ -697,9 +496,17 @@ export async function createGame(o) {
     const pole = new THREE.CylinderGeometry(0.06, 0.1, 5, mobile ? 5 : 6); pole.translate(0, 2.5, 0);
     const arm = new THREE.BoxGeometry(0.06, 0.06, 1.0); arm.translate(0, 4.95, -0.45);
     const metal = matCol(0x4a4f57, { metalness: 0.7, roughness: 0.4 });
-    mkInst(lamps, pole, metal, 0, !mobile); mkInst(lamps, arm, metal);
+    mkInst(lamps, pole, metal, 0, !mobile, null, DETAIL_R + 1); mkInst(lamps, arm, metal, 0, false, null, DETAIL_R);
     const bg = new THREE.SphereGeometry(0.2, mobile ? 6 : 10, mobile ? 5 : 8); bg.scale(1, 0.6, 1); bg.translate(0, 4.85, -0.9); mkInst(lamps, bg, bulbMat);
   }
+
+  // The world built so far never moves: compute its matrices once and drop it from three's
+  // per-frame matrix walk (~3-4k objects, the largest JS cost per frame on phones).
+  const freeze = list => { for (const o of list) { o.updateMatrixWorld(true); o.traverse(c => { c.matrixAutoUpdate = false; }); o.matrixWorldAutoUpdate = false; } };
+  const moving = new Set([sky, hemi, sun, sun.target, fill, fill && fill.target]);
+  freeze(scene.children.filter(o => !moving.has(o)));
+  // the scene root must not auto-update either: a dirty root forces every child to recompute
+  scene.matrixAutoUpdate = false;
 
   // stars
   const starGeo = new THREE.BufferGeometry(), sp = [];
@@ -803,6 +610,7 @@ export async function createGame(o) {
     for (let b = 0; b < 3; b++) { const br = new THREE.Group(); br.rotation.set(0.5, b * 2.1, 0); br.add(tube([0, -0.4, 0], [0, 0.25, 0], 0.012, stemM)); for (let i = 0; i < 7; i++) { const m = new THREE.Mesh(fGeo, fMat); m.position.set(Math.sin(i) * 0.08, 0.1 + i * 0.05, Math.cos(i * 1.7) * 0.08); br.add(m); } const lf = new THREE.Mesh(new THREE.SphereGeometry(0.09, 6, 4), leafM); lf.scale.set(1, 0.3, 2); lf.position.set(0.08, -0.1, 0); br.add(lf); g.add(br); }
     const ring = new THREE.Mesh(ringGeo, new THREE.MeshBasicMaterial({ color: new THREE.Color(0xf7c21b).multiplyScalar(1.2), transparent: true, opacity: 0.6, depthWrite: false })); ring.position.y = -1.15; g.add(ring);
     bake(g, [ring]); g.position.set(x, 1.3, z); scene.add(g); flowers.push({ x, z, g, got: false });
+    trackChunk(g, Math.floor(x / CHUNK), Math.floor(z / CHUNK), DETAIL_R + 1);
   }
   let flowersGot = 0;
 
@@ -873,6 +681,21 @@ export async function createGame(o) {
   const fx = post ? makeComposer(renderer, scene, camera, 4) : null;
   const motes = post ? makeMotes(TX.dot, 420) : null; if (motes) scene.add(motes.points);
   const puffs = makePuffs(); scene.add(puffs.points);
+  // Without a shadow map (phones, Fast) the bike and traffic get soft blob shadows instead.
+  let blobs = null;
+  if (!renderer.shadowMap.enabled) {
+    const bg = new THREE.PlaneGeometry(1, 1); bg.rotateX(-Math.PI / 2);
+    blobs = new THREE.InstancedMesh(bg, contactShadowMaterial([scene.fog.near, scene.fog.far * 0.5], 0.5), 64);
+    blobs.instanceMatrix.setUsage(THREE.DynamicDrawUsage); blobs.frustumCulled = false; blobs.renderOrder = 1; scene.add(blobs);
+  }
+  const blobM = new THREE.Matrix4(), blobQ = new THREE.Quaternion(), blobP = new THREE.Vector3(), blobS = new THREE.Vector3(), Y_AXIS = new THREE.Vector3(0, 1, 0);
+  const updateBlobs = () => {
+    let n = 0;
+    const put = (x, z, h, w, l) => { blobs.setMatrixAt(n++, blobM.compose(blobP.set(x, 0.12, z), blobQ.setFromAxisAngle(Y_AXIS, h), blobS.set(w, 1, l))); };
+    put(P.x, P.z, P.h, 0.75, 1.9);
+    for (const a of agents) if (a.g.visible && n < 64) put(a.g.position.x, a.g.position.z, a.g.rotation.y, a.type === 'ped' ? 0.7 : a.r * 1.15, a.type === 'ped' ? 0.7 : a.r * 2.3);
+    blobs.count = n; blobs.instanceMatrix.needsUpdate = true;
+  };
 
   const stdMats = new Set();
   function collectMats() { scene.traverse(o => { if (!o.isMesh) return; (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => { if (m && m.isMeshStandardMaterial && !stdMats.has(m)) { m.userData.envBase = m.metalness > 0.5 ? 1.15 : 0.42; stdMats.add(m); } }); }); }
@@ -886,7 +709,7 @@ export async function createGame(o) {
   const CAM = [{ d: 2.85, h: 1.38, blur: 0, look: 1.15, lookY: 0.98 }, { d: 6.2, h: 3.15, blur: 0.3, look: 2.1, lookY: 1.1 }];
   const camPos = new THREE.Vector3(P.x - Math.sin(P.h) * CAM[0].d, CAM[0].h, P.z - Math.cos(P.h) * CAM[0].d), look = new THREE.Vector3(), want = new THREE.Vector3();
   const SKY_TOP_D = col('#4e9fdc'), SKY_HOR_D = col('#d9eef8'), SKY_TOP_N = col('#070d1c'), SKY_HOR_N = col('#1a2744'), SKY_HOR_S = col('#ff9a5c'), SKY_TOP_S = col('#7a6fb0');
-  const tmp = new THREE.Color(), tmp2 = new THREE.Color(), WIN_D = col('#3a4452'), WIN_N = col('#ffffff'), BULB_D = col('#d6d6d6'), BULB_N = col('#ffe7a8'), MOON = col('#9fb4ff');
+  const tmp = new THREE.Color(), tmp2 = new THREE.Color(), BULB_D = col('#d6d6d6'), BULB_N = col('#ffe7a8'), MOON = col('#9fb4ff');
   const blockedR = (x, z) => Math.abs(x) > HW + 8 || Math.abs(z) > HH + 8 || blocked(x, z) || blocked(x + 0.45, z) || blocked(x - 0.45, z) || blocked(x, z + 0.45) || blocked(x, z - 0.45);
   // three.js fov is VERTICAL, so a tall phone screen collapses the horizontal field: 46 deg
   // vertical is 85 deg across in landscape but only 22 deg in portrait, magnifying the world
@@ -900,8 +723,12 @@ export async function createGame(o) {
   const ro = new ResizeObserver(resize); ro.observe(container); resize();
   if (fx) fx.setBlur(CAM[camMode].blur);
 
+  let due = 0;
   const frame = now => {
     raf = requestAnimationFrame(frame);
+    // 90/120 Hz phones would otherwise render up to twice as often, heat up and throttle: pace to
+    // ~60 with a deadline (3 ms slack so vsync jitter on a 60 Hz panel never drops a frame).
+    if (mobile) { if (now < due - 3) return; due = Math.max(due, now - 20) + 1000 / 60; }
     const rawDt = (now - last) / 1000, dt = Math.min(0.05, rawDt); last = now;
     if (frozen) return;
     if (playing && rawDt < 0.1) { perfAcc += rawDt; perfN++; }
@@ -927,9 +754,11 @@ export async function createGame(o) {
     if (Math.abs(P.v) < 0.03 && !thr) P.v = 0;
     P.h -= P.steer * 1.9 * dt * Math.min(1, Math.abs(P.v) / 2.5 + 0.15) * Math.sign(P.v || 1);
     const nx = P.x + Math.sin(P.h) * P.v * dt, nz = P.z + Math.cos(P.h) * P.v * dt;
-    if (!blockedR(nx, nz)) { P.x = nx; P.z = nz; }
-    else if (!blockedR(nx, P.z)) { P.x = nx; P.v *= 0.92; }
-    else if (!blockedR(P.x, nz)) { P.z = nz; P.v *= 0.92; }
+    // compound fences are thin segments, so they are tested against the step itself
+    const stop = (x, z) => blockedR(x, z) || fences.hits(P.x, P.z, x, z);
+    if (!stop(nx, nz)) { P.x = nx; P.z = nz; }
+    else if (!stop(nx, P.z)) { P.x = nx; P.v *= 0.92; }
+    else if (!stop(P.x, nz)) { P.z = nz; P.v *= 0.92; }
     else { if (Math.abs(P.v) > 3 && bumpT <= 0) { SND.bump(); bumpT = 0.6; } P.v *= -0.2; }
     bumpT -= dt;
     bike.position.set(P.x, 0, P.z); bike.rotation.y = P.h;
@@ -967,7 +796,8 @@ export async function createGame(o) {
     hemi.groundColor.setRGB(0.55 + 0.2 * day, 0.42 + 0.18 * day, 0.28 + 0.1 * day);
     renderer.toneMappingExposure = (best ? 1.02 : mobile ? 1.0 : 0.94) + dusk * 0.12 + night * 0.08;
     const glow = THREE.MathUtils.smoothstep(night, 0.3, 0.8);
-    litMat.color.copy(WIN_D).lerp(WIN_N, glow).multiplyScalar(1 + glow * 0.45);
+    if (homes) homes.update(P.x, P.z, glow, tsec);
+    fences.update(P.x, P.z);
     bulbMat.color.copy(BULB_D).lerp(BULB_N, night).multiplyScalar(1 + night * 2.1);
     starMat.opacity = THREE.MathUtils.smoothstep(night, 0.5, 1);
     headlight.intensity = night * 1.55; BK.lensM.emissiveIntensity = night * 3.4;
@@ -1032,8 +862,9 @@ export async function createGame(o) {
     if (cullT <= 0) {
       cullT = 0.2;
       const pix = Math.floor(P.x / CHUNK), piz = Math.floor(P.z / CHUNK);
-      for (const c of cullMeshes) { const d = Math.max(Math.abs(c.ix - pix), Math.abs(c.iz - piz)); c.me.visible = d <= CULL_R; }
+      for (const c of cullMeshes) { const d = Math.max(Math.abs(c.ix - pix), Math.abs(c.iz - piz)); c.me.visible = d <= c.r; }
     }
+    if (blobs) updateBlobs();
     if (fx) fx.render(dt); else renderer.render(scene, camera);
     mmT -= dt; if (mmT <= 0) { mmT = 0.12; drawMinimap(); }
     hudT -= dt;
@@ -1044,6 +875,10 @@ export async function createGame(o) {
       hud({ loading: false, ready: true, offline: W.offline, sat: !!sat, hour, money, delivered, flowers: flowersGot, flowersTotal: flowers.length, speed: Math.round(Math.abs(P.v) * 3.6), mission: m, popup: popup ? { name: popup.name, en: popup.en, kind: popup.kind } : null, stats: { b: W.buildings.length, r: W.roads.length, p: W.pois.length, models: Object.keys(assets).length } });
     }
   };
+  // Link every shader before the first frame (in parallel where KHR_parallel_shader_compile is
+  // available) so the opening seconds do not hitch on program compiles — worst on phones.
+  msg('ဂရပ်ဖစ် ပြင်ဆင်နေသည်…', 0.95);
+  try { await renderer.compileAsync(scene, camera); } catch (e) { /* older drivers: compile lazily */ }
   raf = requestAnimationFrame(frame);
 
   const api = {

@@ -1,14 +1,33 @@
 {
-  "_help": "Put .glb files in this folder. \"file\" may be one filename or a list (random variety). Empty slots use built-in models. length/height = target size in metres, rotateY = degrees so the model faces +Z. Houses are stretched to fit each real OSM footprint.",
+  "_help": "Put .glb files in this folder. \"file\" may be one filename or a list (random variety). Empty slots use built-in models. length/height = target size in metres, rotateY = degrees so the model faces +Z. homes are fitted to each real OSM footprint.",
   "slots": {
-    "houses": {
+    "homes": {
+      "_help": "Kenney City Kit (Suburban). Fitted onto real OSM house footprints; the front faces -Z in the source files, hence rotateY 180. Keep the model's own scale (no length/height).",
       "file": [
-        "kenney-city/building-small-a.glb",
-        "kenney-city/building-small-b.glb",
-        "kenney-city/building-small-c.glb",
-        "kenney-city/building-small-d.glb"
+        "kenney-suburban/building-type-a.glb",
+        "kenney-suburban/building-type-b.glb",
+        "kenney-suburban/building-type-c.glb",
+        "kenney-suburban/building-type-d.glb",
+        "kenney-suburban/building-type-e.glb",
+        "kenney-suburban/building-type-f.glb",
+        "kenney-suburban/building-type-g.glb",
+        "kenney-suburban/building-type-h.glb",
+        "kenney-suburban/building-type-i.glb",
+        "kenney-suburban/building-type-j.glb",
+        "kenney-suburban/building-type-k.glb",
+        "kenney-suburban/building-type-l.glb",
+        "kenney-suburban/building-type-m.glb",
+        "kenney-suburban/building-type-n.glb",
+        "kenney-suburban/building-type-o.glb",
+        "kenney-suburban/building-type-p.glb",
+        "kenney-suburban/building-type-q.glb",
+        "kenney-suburban/building-type-r.glb",
+        "kenney-suburban/building-type-s.glb",
+        "kenney-suburban/building-type-t.glb",
+        "kenney-suburban/building-type-u.glb"
       ],
-      "rotateY": 0
+      "rotateY": 180,
+      "mobileVariants": 8
     },
     "bike": {
       "file": null,
@@ -52,14 +71,23 @@
       "rotateY": 0,
       "walkClip": "walk"
     },
-    "palm": {
-      "file": "poly-palm/palmyra-palm.glb",
-      "height": 9.5,
+    "tree": {
+      "_help": "Kenney suburban kit trees, kept at the kit's own scale relative to the houses.",
+      "file": [
+        "kenney-suburban/tree-large.glb",
+        "kenney-suburban/tree-small.glb"
+      ],
+      "scale": 8,
       "rotateY": 0
     },
-    "tree": {
-      "file": "3donimus-tree/big-tree.glb",
-      "height": 6.5,
+    "planter": {
+      "file": "kenney-suburban/planter.glb",
+      "scale": 5,
+      "rotateY": 0
+    },
+    "fence": {
+      "_help": "One Kenney fence segment; homes.js tiles it along compound edges at 1.15 m tall.",
+      "file": "kenney-suburban/fence.glb",
       "rotateY": 0
     },
     "pagoda": {
